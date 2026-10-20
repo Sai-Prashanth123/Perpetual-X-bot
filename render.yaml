@@ -27,7 +27,6 @@ services:
     dockerfilePath: ./Dockerfile
     plan: standard                   # 2 GB: Hermes recommends 2-4 GB for a multi-profile gateway
     autoDeployTrigger: commit
-    maxShutdownDelaySeconds: 60
     disk:
       name: agency-bot-data
       mountPath: /opt/data
