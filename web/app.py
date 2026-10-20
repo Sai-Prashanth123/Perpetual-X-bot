@@ -119,8 +119,23 @@ def login(request: Request):
         "slack": bool(os.environ.get("SLACK_CLIENT_ID")), "password": bool(os.environ.get("DASHBOARD_PASSWORD"))})
 
 
+@app.get("/login/password")
+def back_to_login(request: Request):
+    """Refreshing or going Back to the sign-in form address lands here instead of a 405."""
+    return RedirectResponse("/" if request.session.get("user") else "/login", status_code=303)
+
+
+@app.get("/logout")
+def logout_link(request: Request):
+    request.session.clear()
+    return RedirectResponse("/login", status_code=303)
+
+
 @app.get("/login/slack")
 def login_slack(request: Request):
+    if not os.environ.get("SLACK_CLIENT_ID"):
+        return RedirectResponse("/login?e=Slack+sign-in+isn't+set+up+yet.+Use+the+dashboard+password.",
+                                status_code=303)
     state = secrets.token_urlsafe(24)
     request.session["slack_state"] = state
     params = {"response_type": "code", "scope": "openid profile", "client_id": os.environ["SLACK_CLIENT_ID"],
