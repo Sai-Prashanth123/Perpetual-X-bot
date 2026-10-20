@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Team{% endblock %}
+{% block main %}
+<h1>Team</h1>
+<p class="lede">How each person is working their account: what they act on, how fast, and how the account is moving. Actions come from Slack and this dashboard.</p>
+<div class="tabs" role="group" aria-label="Window">
+  {% for d in [7, 28] %}<a href="/team?days={{ d }}" aria-current="{{ 'true' if d == days else 'false' }}">{{ d }} days</a>{% endfor %}
+</div>
+
+<table class="board">
+  <thead><tr><th>Account</th><th>Run by</th><th class="num-right">Posts</th><th class="num-right">Views vs before</th><th class="num-right">Followers</th><th>Suggestions used</th><th>Needs attention</th></tr></thead>
+  <tbody>
+  {% for c in clients %}
+    <tr>
+      <td class="who"><a href="/c/{{ c.client }}">@{{ c.client }}</a></td>
+      <td>{{ names.get(c.employee, c.employee or 'unassigned') }}</td>
+      <td class="num-right">{{ c.posts }}</td>
+      <td class="num-right {{ 'up' if (c.views_change_pct or 0) > 0 else 'down' if (c.views_change_pct or 0) < 0 else '' }}">{{ c.views_change_pct|delta(true) }}</td>
+      <td class="num-right">{{ c.followers_change|delta }}</td>
+      <td>{{ c.suggestions.used }} of {{ c.suggestions.suggested }}{% if c.suggestions.pending %} <small class="muted">({{ c.suggestions.pending }} waiting)</small>{% endif %}</td>
+      <td>{% for f in c.flags %}<span class="flag">{{ f }}</span>{% else %}<span class="muted">All good</span>{% endfor %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<h2 class="section">Actions by person</h2>
+{% if rows %}
+<table class="plain">
+  <thead><tr><th>Person</th><th>Account</th><th class="num-right">Actions</th><th class="num-right">Approved</th><th class="num-right">Edited</th><th class="num-right">Rejected</th><th class="num-right">Posted</th><th class="num-right">Typical time to act</th></tr></thead>
+  <tbody>
+  {% for t in rows %}
+    <tr><td>{{ t.employee }}</td><td><a href="/c/{{ t.client }}">@{{ t.client }}</a></td><td class="num-right">{{ t.actions }}</td>
+      <td class="num-right">{{ t.approved }}</td><td class="num-right">{{ t.edited }}</td><td class="num-right">{{ t.rejected }}</td><td class="num-right">{{ t.posted }}</td>
+      <td class="num-right">{{ (t.median_minutes_to_act|int ~ ' min') if t.median_minutes_to_act is not none else '–' }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty">No actions in this window. People act by replying in their client's Slack channel (ok, edit, no, /post) or from a client's page here.</div>
+{% endif %}
+{% endblock %}

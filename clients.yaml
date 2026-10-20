@@ -1,0 +1,14 @@
+# The agency's clients — one Hermes profile, one Slack channel and one employee each.
+# Edit, commit and push; the bot reconciles on its next deploy. No secrets in this file.
+#
+#   handle          X handle (no @)
+#   name            display name
+#   slack_channel   Slack channel ID where this client's employee works (e.g. C0123ABCDEF)
+#   employee        Slack member ID of the employee who runs the account
+#   niche_topics    specific phrases to watch, searched exactly ("Clay GTM", not "clay")
+#   watch_accounts  peers / competitors / people worth engaging
+#   avoid_accounts  never engage with these
+#   timezone        IANA timezone the schedule follows
+#   goals, notes    free text the bot reads every run
+
+clients: []

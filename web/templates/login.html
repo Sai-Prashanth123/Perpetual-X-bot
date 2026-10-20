@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in — Perpetual X</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;600;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="login">
+  <div class="panel">
+    <div class="brand" style="margin:0 0 18px">Perpetual <span>X</span></div>
+    <h1 style="font-size:1.5rem">Agency dashboard</h1>
+    <p class="muted">Sign in with the agency's Slack workspace.</p>
+    {% if error %}<div class="flash bad">{{ error }}</div>{% endif %}
+    <a class="btn primary" href="/login/slack">Sign in with Slack</a>
+    {% if dev %}
+      <form method="post" action="/login/dev" style="margin-top:18px">
+        <p class="muted">Local testing only:</p>
+        <input type="hidden" name="name" value="Local tester"><button class="btn">Sign in as a local tester</button>
+      </form>
+    {% endif %}
+  </div>
+</div>
+</body>
+</html>

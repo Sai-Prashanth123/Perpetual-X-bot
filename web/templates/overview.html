@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Overview{% endblock %}
+{% block main %}
+<h1>Every account, last {{ days }} days</h1>
+<p class="lede">Ranked by views. Bars show the change against the previous {{ days }} days.</p>
+
+<div class="tabs" role="group" aria-label="Window">
+  {% for d in [1, 7, 28] %}<a href="/?days={{ d }}" aria-current="{{ 'true' if d == days else 'false' }}">{{ d }} {{ 'day' if d == 1 else 'days' }}</a>{% endfor %}
+</div>
+
+<div class="strip">
+  <div><b>{{ totals.views|num }}</b><span>views</span></div>
+  <div><b>{{ totals.likes|num }}</b><span>likes</span></div>
+  <div><b>{{ totals.bookmarks|num }}</b><span>bookmarks</span></div>
+  <div><b>{{ totals.posts }}</b><span>posts</span></div>
+  <div><b class="{{ 'up' if foll_change > 0 else 'down' if foll_change < 0 else '' }}">{{ foll_change|delta }}</b><span>new followers</span></div>
+</div>
+
+{% if data.clients %}
+<table class="board">
+  <thead><tr>
+    <th></th><th>Account</th><th class="num-right">Followers</th><th>Views, 28 days</th>
+    <th>Views vs before</th><th class="num-right hide-sm">Engagement</th><th class="hide-sm">Suggestions used</th><th>Needs attention</th>
+  </tr></thead>
+  <tbody>
+  {% for c in data.clients %}
+    {% set pct = c.views_change_pct %}
+    <tr>
+      <td class="rank">{{ loop.index }}</td>
+      <td class="who"><a href="/c/{{ c.client }}">@{{ c.client }}</a><small>{{ c.name }}</small></td>
+      <td class="num-right"><span class="big">{{ c.followers|num }}</span><br>
+        <small class="{{ 'up' if (c.followers_change or 0) > 0 else 'down' if (c.followers_change or 0) < 0 else 'muted' }}">{{ c.followers_change|delta }}</small></td>
+      <td>{{ sparkline(spark[c.client]) }}<small class="muted">{{ c.views|num }} this window</small></td>
+      <td>
+        <div class="change">
+          {% if pct is not none %}
+            <span class="bar {{ 'neg' if pct < 0 else '' }}" style="width: {{ [[pct|abs, 4]|max, 90]|min }}px"></span>
+            <b class="{{ 'up' if pct >= 0 else 'down' }}">{{ pct|delta(true) }}</b>
+          {% else %}<span class="muted">no baseline</span>{% endif %}
+        </div>
+      </td>
+      <td class="num-right hide-sm">{{ c.engagement_rate if c.engagement_rate is not none else '–' }}{% if c.engagement_rate is not none %}%{% endif %}</td>
+      <td class="hide-sm">{{ c.suggestions.used }} of {{ c.suggestions.suggested }}
+        {% if c.suggestions.posted %}<br><small class="muted">{{ c.suggestions.posted }} posted</small>{% endif %}</td>
+      <td>{% for f in c.flags %}<span class="flag">{{ f }}</span>{% else %}<span class="muted">All good</span>{% endfor %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty">No clients yet. Add one to clients.yaml and deploy; the bot backfills four weeks of numbers on its first boot.</div>
+{% endif %}
+
+{% if data.team %}
+<h2 class="section">Who's acting on suggestions</h2>
+<table class="plain">
+  <thead><tr><th>Person</th><th>Account</th><th class="num-right">Approved</th><th class="num-right">Edited</th><th class="num-right">Rejected</th><th class="num-right">Posted</th><th class="num-right">Typical time to act</th></tr></thead>
+  <tbody>
+  {% for t in data.team[:8] %}
+    <tr><td>{{ t.employee }}</td><td><a href="/c/{{ t.client }}">@{{ t.client }}</a></td>
+      <td class="num-right">{{ t.approved }}</td><td class="num-right">{{ t.edited }}</td><td class="num-right">{{ t.rejected }}</td>
+      <td class="num-right">{{ t.posted }}</td><td class="num-right">{{ (t.median_minutes_to_act|int ~ ' min') if t.median_minutes_to_act is not none else '–' }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

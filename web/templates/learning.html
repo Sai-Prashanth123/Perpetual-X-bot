@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}What we've learned{% endblock %}
+{% block main %}
+<h1>What we've learned</h1>
+<p class="lede">Every client's bot reviews its results each Sunday. HQ then turns patterns that hold across clients into the agency playbook, which every bot reads. Each client's voice stays its own.</p>
+
+<div class="grid2">
+  <div class="panel">
+    <h2 class="section" style="margin-top:0">Agency playbook</h2>
+    {% if doc %}<p class="muted">Updated {{ doc.updated_at|ago }}</p><div class="doc">{{ doc.body }}</div>
+    {% else %}<p class="muted">Empty until the first Sunday review across clients.</p>{% endif %}
+  </div>
+  <div>
+    <h2 class="section" style="margin-top:0">Review log</h2>
+    {% for l in log %}
+      <div class="panel" style="margin-bottom:10px">
+        <b>{{ 'HQ (all clients)' if l.client == '_agency' else '@' ~ l.client }}</b> <span class="muted">{{ l.at|ago }}</span>
+        <p style="margin:6px 0">{{ l.summary }}</p>
+        {% if l.changes %}<ul>{% for ch in l.changes %}<li>{{ ch }}</li>{% endfor %}</ul>{% endif %}
+      </div>
+    {% else %}<div class="empty">No reviews yet.</div>{% endfor %}
+  </div>
+</div>
+{% endblock %}

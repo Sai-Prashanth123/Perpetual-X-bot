@@ -1,0 +1,5 @@
+name: perpetual
+version: "1.0"
+description: Perpetual X Bot — read-only X data from the Thought Pilot scraping console plus the suggestion ledger that drives learning. Never posts to X.
+requires_env:
+  - XCONSOLE_API_KEY

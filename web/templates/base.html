@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Agency{% endblock %} — Perpetual X</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/htmx/2.0.4/htmx.min.js" defer></script>
+  {% block head %}{% endblock %}
+</head>
+<body>
+{% macro sparkline(values, w=140, h=34) -%}
+  {%- if values and values|length > 1 -%}
+    {%- set hi = [values|max, 1]|max -%}
+    {%- set step = w / (values|length - 1) -%}
+    {%- set pts = [] -%}
+    {%- for v in values -%}{%- set _ = pts.append("%.1f,%.1f" % (loop.index0 * step, h - 2 - (v / hi) * (h - 4))) -%}{%- endfor -%}
+    <svg class="spark" width="{{ w }}" height="{{ h }}" viewBox="0 0 {{ w }} {{ h }}" role="img" aria-label="Daily views, last {{ values|length }} days">
+      <path class="area" d="M0,{{ h }} L{{ pts|join(' L') }} L{{ w }},{{ h }} Z"/>
+      <path d="M{{ pts|join(' L') }}"/>
+    </svg>
+  {%- else -%}<span class="muted">no data yet</span>{%- endif -%}
+{%- endmacro %}
+<div class="frame">
+  <aside class="side">
+    <div class="brand">Perpetual <span>X</span></div>
+    <nav aria-label="Main">
+      {% set here = request.url.path %}
+      <a href="/" {% if here == '/' %}aria-current="page"{% endif %}>Overview</a>
+      <a href="/viral" {% if here == '/viral' %}aria-current="page"{% endif %}>Viral now</a>
+      <a href="/team" {% if here == '/team' %}aria-current="page"{% endif %}>Team</a>
+      <a href="/learning" {% if here == '/learning' %}aria-current="page"{% endif %}>What we've learned</a>
+      <h2>Clients</h2>
+      {% for c in nav_clients %}
+        <a href="/c/{{ c.handle }}" {% if here == '/c/' ~ c.handle %}aria-current="page"{% endif %}>
+          @{{ c.handle }}
+        </a>
+      {% else %}
+        <p class="muted" style="margin:0 10px">Add clients in clients.yaml.</p>
+      {% endfor %}
+    </nav>
+    {% if user %}
+    <form method="post" action="/logout">
+      <p class="muted" style="margin:0 0 6px">{{ user.name }}{% if user.owner %} (owner){% endif %}</p>
+      <button class="btn quiet" type="submit">Sign out</button>
+    </form>
+    {% endif %}
+  </aside>
+  <main>
+    {% if flash %}
+      <div class="flash {% if not flash.ok %}bad{% endif %}" role="status">
+        {{ flash.msg }}
+        {% if flash.url %} <a href="{{ flash.url }}" target="_blank" rel="noopener">{{ 'Open in X' if not flash.ok else 'View on X' }}</a>{% endif %}
+      </div>
+    {% endif %}
+    {% block main %}{% endblock %}
+  </main>
+</div>
+{% block scripts %}{% endblock %}
+</body>
+</html>

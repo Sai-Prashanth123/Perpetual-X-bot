@@ -1,0 +1,372 @@
+"""Boot-time reconciler for the agency bot (runs as the hermes user before the gateway starts).
+
+clients.yaml is the source of truth. On every boot this:
+  * applies the database schema and syncs the client roster into Postgres,
+  * sets up the default profile as the HQ agent (#hq) holding the one shared Slack bot,
+  * creates/refreshes one Hermes profile per client, routed from its Slack channel,
+  * (re)registers each profile's cron jobs when the schedule version or settings change.
+
+Learned state is never overwritten: client-voice, playbook, agency-playbook, memories,
+sessions, the database. Idempotent — safe to run on every boot.
+"""
+
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.append("/opt/perpetual/pylib")
+
+from ruamel.yaml import YAML  # noqa: E402  (ships with Hermes)
+
+from perpetual_core import agency, ledger  # noqa: E402
+from perpetual_core.settings import profile_slug  # noqa: E402
+
+DATA = Path(os.environ.get("HERMES_HOME", "/opt/data"))
+SRC = Path("/opt/perpetual")
+TEMPLATE = SRC / "hermes-template"
+CRON_VERSION = (SRC / "CRON_VERSION").read_text().strip()
+SHARED_SKILLS = DATA / "shared-skills"
+LEARNED = {"client-voice", "playbook"}
+PY = "/opt/hermes/.venv/bin/python"
+
+yaml = YAML()
+yaml.preserve_quotes = True
+
+
+def log(msg):
+    print(f"[perpetual] {msg}", flush=True)
+
+
+def env(name, default=None, required=False):
+    v = os.environ.get(name, default)
+    if required and not v:
+        log(f"ERROR: {name} is not set — cannot start")
+        sys.exit(1)
+    return v
+
+
+def hermes(*args, profile=None, check=True):
+    cmd = ["hermes"] + (["-p", profile] if profile else []) + list(args)
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if check and r.returncode != 0:
+        raise RuntimeError(f"{' '.join(cmd[:6])}… failed: {r.stderr.strip()[-400:]}")
+    return r.stdout
+
+
+# ---------------------------------------------------------------- file helpers
+
+def write_env(home, values):
+    """Merge KEY=VALUE pairs into a profile's .env (Hermes reads it into the profile's secret scope)."""
+    path = home / ".env"
+    lines, seen = [], set()
+    if path.exists():
+        for line in path.read_text().splitlines():
+            key = line.split("=", 1)[0].strip() if "=" in line else None
+            if key in values:
+                if values[key] is not None:
+                    lines.append(f"{key}={values[key]}")
+                seen.add(key)
+            else:
+                lines.append(line)
+    for k, v in values.items():
+        if k not in seen and v is not None:
+            lines.append(f"{k}={v}")
+    path.write_text("\n".join(lines) + "\n")
+    path.chmod(0o600)
+
+
+def edit_config(home, changes):
+    """Set dotted keys in a profile's config.yaml, keeping comments and everything else."""
+    path = home / "config.yaml"
+    doc = yaml.load(path.read_text()) if path.exists() else {}
+    doc = doc or {}
+    for dotted, value in changes.items():
+        node = doc
+        parts = dotted.split(".")
+        for p in parts[:-1]:
+            if not isinstance(node.get(p), dict):
+                node[p] = {}
+            node = node[p]
+        node[parts[-1]] = value
+    with path.open("w") as f:
+        yaml.dump(doc, f)
+
+
+def sha(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def seed_skills(src_dir, dest_dir, learned=()):
+    """Refresh procedural skills unless the agent improved them since the last seed; seed learned ones once."""
+    for skill in sorted(p for p in src_dir.iterdir() if p.is_dir()):
+        dest = dest_dir / skill.name
+        src_file, dest_file, stamp = skill / "SKILL.md", dest / "SKILL.md", dest / ".seeded.sha"
+        dest.mkdir(parents=True, exist_ok=True)
+        if skill.name in learned:
+            if not dest_file.exists():
+                shutil.copy(src_file, dest_file)
+            continue
+        untouched = stamp.exists() and dest_file.exists() and sha(dest_file) == stamp.read_text().strip()
+        if not dest_file.exists() or untouched or env("PX_RESEED_SKILLS") == "1":
+            shutil.copy(src_file, dest_file)
+            stamp.write_text(sha(src_file))
+        else:
+            log(f"keeping agent-edited skill {dest_dir.parent.parent.name}/{skill.name}")
+
+
+def install_plugin(home, name):
+    dest = home / "plugins" / name
+    shutil.rmtree(dest, ignore_errors=True)
+    shutil.copytree(TEMPLATE / "plugins" / name, dest, ignore=shutil.ignore_patterns("__pycache__"))
+
+
+def write_script(home, name, args):
+    scripts = home / "scripts"
+    scripts.mkdir(exist_ok=True)
+    (scripts / name).write_text(
+        "import sys\nsys.path.append('/opt/perpetual/pylib')\n"
+        "from perpetual_core.jobs import main\n"
+        f"sys.exit(main({args!r}))\n")
+
+
+# ---------------------------------------------------------------- cron
+
+def reconcile_cron(home, profile, jobs, fingerprint):
+    """Recreate this profile's px-* jobs when the fingerprint changed; otherwise leave them alone."""
+    stamp = home / ".perpetual-cron"
+    if stamp.exists() and stamp.read_text() == fingerprint:
+        return False
+    listing = hermes("cron", "list", "--all", profile=profile, check=False)
+    for name in sorted({w for w in listing.split() if w.startswith("px-")}):
+        hermes("cron", "remove", name, profile=profile, check=False)
+    for job in jobs:
+        prompt = [job["prompt"]] if job["prompt"] else []
+        hermes("cron", "create", job["schedule"], *prompt, "--name", job["name"], *job["args"], profile=profile)
+    stamp.write_text(fingerprint)
+    return True
+
+
+def skill_args(*skills):
+    out = []
+    for s in skills:
+        out += ["--skill", s]
+    return out
+
+
+# ---------------------------------------------------------------- main
+
+def main():
+    shared = {
+        "ANTHROPIC_API_KEY": env("ANTHROPIC_API_KEY", required=True),
+        "XCONSOLE_API_KEY": env("XCONSOLE_API_KEY", required=True),
+        "XCONSOLE_URL": env("XCONSOLE_URL", "https://scraping.thought-pilot.co/api"),
+        "DATABASE_URL": env("DATABASE_URL", required=True),
+        "AGENCY_WEB_URL": env("AGENCY_WEB_URL") or (f"http://{env('AGENCY_WEB_HOSTPORT')}" if env("AGENCY_WEB_HOSTPORT") else None),
+        "INTERNAL_TOKEN": env("INTERNAL_TOKEN"),
+    }
+    model = env("PX_MODEL", "claude-sonnet-5-5")
+    learn_model = env("PX_LEARN_MODEL", "claude-opus-5-5")
+    hq_channel = env("HQ_SLACK_CHANNEL")
+    agency_tz = env("AGENCY_TIMEZONE", "UTC")
+
+    roster_file = Path(env("PX_CLIENTS_FILE", str(SRC / "clients.yaml")))
+    clients = (yaml.load(roster_file.read_text()) or {}).get("clients") or []
+    clients = [dict(c) for c in clients]
+    log(f"{len(clients)} client(s) in {roster_file.name}")
+
+    # Scripts run outside any profile scope; give them the shared settings.
+    shared_env = DATA / "perpetual-shared.env"
+    shared_env.write_text("".join(f"{k}={shared[k]}\n" for k in ("DATABASE_URL", "XCONSOLE_API_KEY", "XCONSOLE_URL")))
+    shared_env.chmod(0o600)
+
+    conn = ledger.connect()
+    ledger.ensure_schema(conn)
+    agency.sync_clients(conn, clients)
+
+    # ---- shared agency playbook (written by HQ, read by every client)
+    seed_skills(TEMPLATE / "shared-skills", SHARED_SKILLS, learned={"agency-playbook"})
+
+    # ---- clients
+    routes, channels, needs_backfill = [], [], []
+    for c in clients:
+        handle = c["handle"].lstrip("@").lower()
+        slug = profile_slug(handle)
+        channel = c.get("slack_channel")
+        home = DATA / "profiles" / slug
+        if not home.exists():
+            log(f"creating profile {slug} for @{handle}")
+            hermes("profile", "create", slug, "--no-alias", "--description", f"X strategist for @{handle}")
+        install_plugin(home, "perpetual")
+        name = c.get("name") or handle
+        (home / "SOUL.md").write_text((TEMPLATE / "SOUL.md").read_text()
+                                      .replace("{{CLIENT_NAME}}", name).replace("{{CLIENT_HANDLE}}", handle))
+        skills_dir = home / "skills" / "perpetual-x"
+        seed_skills(TEMPLATE / "skills" / "perpetual-x", skills_dir, learned=LEARNED)
+        brief = skills_dir / "client-brief"
+        brief.mkdir(parents=True, exist_ok=True)
+        (brief / "SKILL.md").write_text(client_brief(c, handle, name))
+        write_script(home, "px_requests.py", ["requests-pending", handle])
+        write_env(home, {**shared, "CLIENT_HANDLE": handle})
+        tz = c.get("timezone") or "UTC"
+        edit_config(home, {
+            "model.provider": "anthropic", "model.default": model, "timezone": tz,
+            "approvals.mode": "manual", "memory.memory_enabled": True,
+            "plugins.enabled": ["perpetual"], "skills.external_dirs": [str(SHARED_SKILLS)],
+        })
+        if not channel:
+            log(f"WARNING: @{handle} has no slack_channel — its jobs stay local")
+        deliver = f"slack:{channel}" if channel else "local"
+        if channel:
+            routes.append({"name": f"x-{slug}", "platform": "slack", "chat_id": str(channel), "profile": slug})
+            channels.append(str(channel))
+        fp = json.dumps([CRON_VERSION, deliver, model, learn_model, tz])
+        if reconcile_cron(home, slug, client_jobs(deliver, learn_model), fp):
+            log(f"registered cron jobs for @{handle} → {deliver}")
+        voice = skills_dir / "client-voice" / "SKILL.md"
+        if "version: 0.0.0" in voice.read_text():
+            hermes("cron", "remove", "px-onboarding", profile=slug, check=False)
+            hermes("cron", "create", "2m", "Onboard this client: follow client-onboarding end to end.",
+                   "--name", "px-onboarding", "--deliver", deliver, "--repeat", "1",
+                   *skill_args("client-brief", "client-voice", "playbook", "agency-playbook", "client-onboarding"),
+                   "--provider", "anthropic", "--model", learn_model, profile=slug)
+            log(f"@{handle}: voice not learned yet — onboarding scheduled")
+        if not conn.execute("SELECT 1 FROM metrics_daily WHERE client = %s LIMIT 1", (handle,)).fetchone():
+            needs_backfill.append(handle)
+
+    if needs_backfill:  # new clients: give the dashboard four weeks of history straight away
+        log(f"backfilling 28 days of metrics for {', '.join(needs_backfill)}")
+        run_job("snapshot-metrics", "--backfill", "28")
+
+    # Retire profiles whose client left clients.yaml: stop their jobs, keep their history.
+    active = {profile_slug(c["handle"]) for c in clients}
+    for home in (DATA / "profiles").glob("*"):
+        if home.is_dir() and home.name not in active and (home / ".perpetual-cron").exists():
+            listing = hermes("cron", "list", "--all", profile=home.name, check=False)
+            for name in sorted({w for w in listing.split() if w.startswith("px-")}):
+                hermes("cron", "remove", name, profile=home.name, check=False)
+            (home / ".perpetual-cron").unlink()
+            log(f"retired profile {home.name} (no longer in clients.yaml)")
+
+    # ---- HQ (default profile): holds the one Slack bot and routes client channels.
+    install_plugin(DATA, "perpetual-hq")
+    (DATA / "SOUL.md").write_text((TEMPLATE / "hq" / "SOUL.md").read_text())
+    seed_skills(TEMPLATE / "hq" / "skills", DATA / "skills" / "perpetual-hq")
+    write_script(DATA, "px_metrics.py", ["snapshot-metrics"])
+    write_script(DATA, "px_viral.py", ["snapshot-viral"])
+    if hq_channel:
+        channels.append(str(hq_channel))
+    write_env(DATA, {
+        **shared,
+        "SLACK_BOT_TOKEN": env("SLACK_BOT_TOKEN"), "SLACK_APP_TOKEN": env("SLACK_APP_TOKEN"),
+        "SLACK_ALLOWED_USERS": env("SLACK_ALLOWED_USERS"), "SLACK_HOME_CHANNEL": hq_channel,
+        # Answer in every agency channel without needing an @mention.
+        "SLACK_FREE_RESPONSE_CHANNELS": ",".join(channels) or None,
+    })
+    edit_config(DATA, {
+        "model.provider": "anthropic", "model.default": model, "timezone": agency_tz,
+        "approvals.mode": "manual", "plugins.enabled": ["perpetual-hq"],
+        "gateway.multiplex_profiles": True, "gateway.profile_routes": routes,
+    })
+    hq_deliver = f"slack:{hq_channel}" if hq_channel else "local"
+    fp = json.dumps([CRON_VERSION, hq_deliver, model, learn_model, agency_tz])
+    if reconcile_cron(DATA, None, hq_jobs(hq_deliver, learn_model), fp):
+        log(f"registered HQ cron jobs → {hq_deliver}")
+    if not conn.execute("SELECT 1 FROM viral_feed LIMIT 1").fetchone():
+        run_job("snapshot-viral")
+    conn.close()
+    log(f"ready: {len(clients)} client(s), {len(routes)} routed channel(s), HQ → {hq_deliver}")
+
+
+def run_job(*args):
+    subprocess.run([PY, "-m", "perpetual_core.jobs", *args],
+                   env={**os.environ, "PYTHONPATH": "/opt/perpetual/pylib"}, check=False)
+
+
+def client_brief(c, handle, name):
+    def show(v, fallback):
+        if not v:
+            return fallback
+        return ", ".join(v) if isinstance(v, (list, tuple)) else str(v)
+    return f"""---
+name: client-brief
+description: "Who this bot works for: X handle, niche topics, accounts to watch and avoid, timezone, goals and notes. Load first in every job."
+version: 1.0.0
+metadata:
+  hermes:
+    tags: [perpetual-x, config]
+---
+
+# Client brief — generated from clients.yaml on every boot (edit clients.yaml, not this file)
+
+- **Client:** {name} (@{handle})
+- **Niche topics:** {show(c.get('niche_topics'), 'not set — infer from their posts')}
+- **Watch accounts (peers, competitors, people to reply to):** {show(c.get('watch_accounts'), 'none yet')}
+- **Never engage with:** {show(c.get('avoid_accounts'), 'none')}
+- **Timezone:** {c.get('timezone') or 'UTC'}
+- **Goals:** {show(c.get('goals'), 'grow reach and inbound with their ideal audience')}
+
+## Notes
+{show(c.get('notes'), 'none')}
+"""
+
+
+def client_jobs(deliver, learn_model):
+    common = ["--deliver", deliver, "--failure-deliver", deliver]
+    base = ["client-brief", "client-voice", "playbook", "agency-playbook"]
+    return [
+        {"name": "px-hunt", "schedule": "0 8-20/2 * * *",
+         "prompt": "Run a hunt for the client: reply-hunter, then quote-hunter on the same candidate pool, then "
+                   "repost-picks. Send one combined message. If nothing is worth suggesting, reply [SILENT].",
+         "args": common + skill_args(*base, "reply-hunter", "quote-hunter", "repost-picks")},
+        {"name": "px-breakout", "schedule": "15,45 7-22 * * *",
+         "prompt": "Breakout check: follow breakout-watch. Reply [SILENT] unless a qualifying tweet is found.",
+         "args": common + skill_args("client-brief", "client-voice", "breakout-watch") + ["--reasoning-effort", "low"]},
+        {"name": "px-ideas", "schedule": "0 8 * * *",
+         "prompt": "Morning tweet ideas: follow tweet-ideas for today's batch.",
+         "args": common + skill_args(*base, "tweet-ideas")},
+        {"name": "px-engage", "schedule": "0 13 * * *",
+         "prompt": "Engage-back round: follow engage-back.",
+         "args": common + skill_args("client-brief", "client-voice", "engage-back")},
+        {"name": "px-requests", "schedule": "every 15m",
+         "prompt": "New requests from the agency dashboard arrived: follow agency-requests.",
+         "args": common + skill_args(*base, "agency-requests", "reply-hunter", "quote-hunter", "tweet-ideas")
+                 + ["--monitor-script", "px_requests.py"]},
+        {"name": "px-recap", "schedule": "0 21 * * *",
+         "prompt": "Daily recap: follow daily-recap.",
+         "args": common + skill_args("client-brief", "daily-recap")},
+        {"name": "px-report", "schedule": "0 9 * * 1",
+         "prompt": "Weekly performance report: follow performance-report.",
+         "args": common + skill_args("client-brief", "playbook", "performance-report")},
+        {"name": "px-learn", "schedule": "0 22 * * 0",
+         "prompt": "Weekly learning review: follow learning-review and update the playbook and client-voice skills.",
+         "args": common + skill_args(*base, "learning-review")
+                 + ["--provider", "anthropic", "--model", learn_model, "--reasoning-effort", "high"]},
+    ]
+
+
+def hq_jobs(deliver, learn_model):
+    common = ["--deliver", deliver, "--failure-deliver", deliver]
+    return [
+        {"name": "px-metrics", "schedule": "0 6 * * *", "prompt": "",
+         "args": ["--deliver", deliver, "--no-agent", "--script", "px_metrics.py"]},
+        {"name": "px-viral", "schedule": "30 6,14 * * *", "prompt": "",
+         "args": ["--deliver", deliver, "--no-agent", "--script", "px_viral.py"]},
+        {"name": "px-digest", "schedule": "0 9 * * *",
+         "prompt": "Daily agency digest: follow agency-digest.",
+         "args": common + skill_args("agency-digest")},
+        {"name": "px-agency-report", "schedule": "0 10 * * 1",
+         "prompt": "Weekly agency report: follow agency-report.",
+         "args": common + skill_args("agency-report")},
+        {"name": "px-agency-learn", "schedule": "30 23 * * 0",
+         "prompt": "Weekly agency learning: follow agency-learning and update the agency playbook.",
+         "args": common + skill_args("agency-learning")
+                 + ["--provider", "anthropic", "--model", learn_model, "--reasoning-effort", "high"]},
+    ]
+
+
+if __name__ == "__main__":
+    main()
