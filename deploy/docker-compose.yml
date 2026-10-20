@@ -1,0 +1,63 @@
+# Perpetual X on a single server (Oracle Cloud Always Free, or any Linux box with Docker).
+#   db     Postgres
+#   bot    Hermes: HQ + one profile per client (clients.yaml), one Slack app
+#   web    the dashboard, X connections, /internal/post
+#   caddy  HTTPS in front of the dashboard (automatic Let's Encrypt certificate)
+#
+# Run from the repo root:  docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d --build
+
+name: perpetual-x
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: perpetual
+      POSTGRES_USER: perpetual
+      POSTGRES_PASSWORD: ${PG_PASSWORD:?set PG_PASSWORD in deploy/.env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U perpetual -d perpetual"]
+      interval: 10s
+      retries: 10
+
+  bot:
+    build: {context: .., dockerfile: Dockerfile}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://perpetual:${PG_PASSWORD}@db:5432/perpetual
+      AGENCY_WEB_URL: http://web:8000
+    volumes:
+      - botdata:/opt/data
+    depends_on:
+      db: {condition: service_healthy}
+    stop_grace_period: 60s
+
+  web:
+    build: {context: .., dockerfile: web/Dockerfile}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://perpetual:${PG_PASSWORD}@db:5432/perpetual
+      PUBLIC_URL: https://${DOMAIN:?set DOMAIN in deploy/.env}
+    depends_on:
+      db: {condition: service_healthy}
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on: [web]
+
+volumes:
+  pgdata:
+  botdata:
+  caddy_data:

@@ -1,0 +1,7 @@
+{$DOMAIN} {
+	encode gzip
+	# The bot reaches /internal/post over the Docker network; never expose it publicly.
+	@internal path /internal/*
+	respond @internal 404
+	reverse_proxy web:8000
+}
