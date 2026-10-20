@@ -20,6 +20,8 @@ services:
         sync: false
       - key: INTERNAL_TOKEN         # must match the bot's INTERNAL_TOKEN
         sync: false
+      - key: DASHBOARD_PASSWORD     # password sign-in until Slack sign-in is set up (remove after)
+        sync: false
       - key: SESSION_SECRET
         generateValue: true
       - key: TOKEN_ENCRYPTION_KEY   # Fernet key; see README for the one-liner that makes one

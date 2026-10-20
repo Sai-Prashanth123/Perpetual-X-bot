@@ -114,7 +114,9 @@ async def _redirects(request, exc):
 
 @app.get("/login", response_class=HTMLResponse)
 def login(request: Request):
-    return templates.TemplateResponse(request, "login.html", {"dev": DEV_LOGIN, "error": request.query_params.get("e")})
+    return templates.TemplateResponse(request, "login.html", {
+        "dev": DEV_LOGIN, "error": request.query_params.get("e"),
+        "slack": bool(os.environ.get("SLACK_CLIENT_ID")), "password": bool(os.environ.get("DASHBOARD_PASSWORD"))})
 
 
 @app.get("/login/slack")
@@ -153,6 +155,17 @@ def login_slack_callback(request: Request, code: str = "", state: str = ""):
                         last_seen = now()""", (user["id"], user["name"], user["owner"]))
         conn.commit()
     return RedirectResponse(request.session.pop("next", "/"), status_code=303)
+
+
+@app.post("/login/password")
+def login_password(request: Request, password: str = Form(...), name: str = Form("Owner")):
+    """Fallback sign-in (DASHBOARD_PASSWORD) for before Slack sign-in is set up."""
+    expected = os.environ.get("DASHBOARD_PASSWORD", "")
+    if not expected or not hmac.compare_digest(password.encode(), expected.encode()):
+        time.sleep(1)  # slow down guessing
+        return RedirectResponse("/login?e=Wrong+password.", status_code=303)
+    request.session["user"] = {"id": "UPASSWORD", "name": name.strip()[:40] or "Owner", "owner": True}
+    return RedirectResponse("/", status_code=303)
 
 
 @app.post("/login/dev")
