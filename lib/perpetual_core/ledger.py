@@ -34,7 +34,24 @@ def connect():
     url = env("DATABASE_URL")
     if not url:
         raise RuntimeError("DATABASE_URL is not set")
-    return psycopg.connect(url, row_factory=dict_row, autocommit=False)
+    return psycopg.connect(url, row_factory=dict_row, autocommit=False, **_ipv4_hostaddr(url))
+
+
+def _ipv4_hostaddr(url):
+    """Prefer IPv4 for hosted Postgres (Neon, Supabase): many Docker networks have no IPv6
+    route, and libpq would otherwise fail on the AAAA record. `host` stays as given, so TLS
+    SNI and certificate checks still use the hostname."""
+    import socket
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    host = parsed.hostname
+    if not host or host in ("localhost",) or host.replace(".", "").isdigit():
+        return {}
+    try:
+        infos = socket.getaddrinfo(host, parsed.port or 5432, socket.AF_INET, socket.SOCK_STREAM)
+    except OSError:
+        return {}
+    return {"hostaddr": infos[0][4][0]} if infos else {}
 
 
 def ensure_schema(conn):

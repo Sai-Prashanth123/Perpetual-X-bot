@@ -183,7 +183,7 @@ def main():
     shared_env.write_text("".join(f"{k}={shared[k]}\n" for k in ("DATABASE_URL", "XCONSOLE_API_KEY", "XCONSOLE_URL")))
     shared_env.chmod(0o600)
 
-    conn = ledger.connect()
+    conn = connect_with_retry()
     ledger.ensure_schema(conn)
     agency.sync_clients(conn, clients)
 
@@ -279,6 +279,20 @@ def main():
         run_job("snapshot-viral")
     conn.close()
     log(f"ready: {len(clients)} client(s), {len(routes)} routed channel(s), HQ → {hq_deliver}")
+
+
+def connect_with_retry(attempts=8):
+    """The container's network can lag the boot by a few seconds; an external database
+    (Neon, Supabase) shouldn't fail the whole start on the first try."""
+    import time
+    for i in range(1, attempts + 1):
+        try:
+            return ledger.connect()
+        except Exception as e:  # noqa: BLE001
+            if i == attempts:
+                raise
+            log(f"database not reachable yet ({str(e).splitlines()[0][:120]}); retry {i}/{attempts - 1}")
+            time.sleep(min(5 * i, 30))
 
 
 def run_job(*args):
