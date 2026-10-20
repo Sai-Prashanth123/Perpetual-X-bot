@@ -164,7 +164,8 @@ def _post_via_web(client, code, by):
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json",
                  "User-Agent": "perpetual-x-bot/1.0"})
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        # Generous timeout: a free-plan dashboard may need ~60 s to wake from sleep.
+        with urllib.request.urlopen(req, timeout=120) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as e:
         try:

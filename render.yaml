@@ -1,76 +1,33 @@
-# Perpetual X Bot — agency deployment. Three resources serve every client:
-#   agency-bot  one Hermes container: HQ + one profile per client in clients.yaml, one Slack app
-#   agency-web  the dashboard, X account connections, and the endpoint /post uses
-#   agency-db   Postgres shared by both
+# Perpetual X — the dashboard on Render's free plan.
+# The Hermes bot runs on its own server (deploy/docker-compose.bot.yml) and the database is
+# external (e.g. Neon), so this Blueprint has just the web service. Free web services sleep
+# after 15 minutes idle and wake on the next request (~30-60 s).
 # Secrets are `sync: false`: Render asks for them when the Blueprint is first applied.
 
-databases:
-  - name: agency-db
-    plan: basic-256mb
-    databaseName: perpetual
-    user: perpetual
-
-envVarGroups:
-  - name: agency-shared
-    envVars:
-      - key: XCONSOLE_API_KEY
-        sync: false
-      - key: XCONSOLE_URL
-        value: https://scraping.thought-pilot.co/api
-      - key: INTERNAL_TOKEN          # bot -> web; any long random string
-        generateValue: true
-
 services:
-  - type: worker
-    name: agency-bot
-    runtime: docker
-    dockerfilePath: ./Dockerfile
-    plan: standard                   # 2 GB: Hermes recommends 2-4 GB for a multi-profile gateway
-    autoDeployTrigger: commit
-    disk:
-      name: agency-bot-data
-      mountPath: /opt/data
-      sizeGB: 5
-    envVars:
-      - fromGroup: agency-shared
-      - key: DATABASE_URL
-        fromDatabase: {name: agency-db, property: connectionString}
-      - key: AGENCY_WEB_HOSTPORT     # private network: the bot calls the web app directly
-        fromService: {type: web, name: agency-web, property: hostport}
-      - key: ANTHROPIC_API_KEY
-        sync: false
-      - key: SLACK_BOT_TOKEN
-        sync: false
-      - key: SLACK_APP_TOKEN
-        sync: false
-      - key: SLACK_ALLOWED_USERS     # comma-separated member IDs: owner + every employee
-        sync: false
-      - key: HQ_SLACK_CHANNEL
-        sync: false
-      - key: AGENCY_TIMEZONE
-        value: Europe/London
-      - key: PX_MODEL
-        value: claude-sonnet-5-5
-      - key: PX_LEARN_MODEL
-        value: claude-opus-5-5
-
   - type: web
     name: agency-web
     runtime: docker
     dockerfilePath: ./web/Dockerfile
-    plan: starter
+    plan: free
+    region: singapore
     autoDeployTrigger: commit
     healthCheckPath: /healthz
     envVars:
-      - fromGroup: agency-shared
-      - key: DATABASE_URL
-        fromDatabase: {name: agency-db, property: connectionString}
-      - key: PUBLIC_URL              # e.g. https://agency-web.onrender.com (or your domain)
+      - key: DATABASE_URL           # the same Postgres the bot uses
+        sync: false
+      - key: PUBLIC_URL             # https://agency-web.onrender.com (or your domain)
+        sync: false
+      - key: INTERNAL_TOKEN         # must match the bot's INTERNAL_TOKEN
         sync: false
       - key: SESSION_SECRET
         generateValue: true
-      - key: TOKEN_ENCRYPTION_KEY    # Fernet key; see README for the one-liner that makes one
+      - key: TOKEN_ENCRYPTION_KEY   # Fernet key; see README for the one-liner that makes one
         sync: false
+      - key: XCONSOLE_API_KEY
+        sync: false
+      - key: XCONSOLE_URL
+        value: https://scraping.thought-pilot.co/api
       - key: SLACK_CLIENT_ID
         sync: false
       - key: SLACK_CLIENT_SECRET

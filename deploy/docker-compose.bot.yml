@@ -1,0 +1,21 @@
+# Bot-only deployment: just the Hermes agent on this server. The database (e.g. Neon) and the
+# dashboard (e.g. Render free) live elsewhere — DATABASE_URL and AGENCY_WEB_URL in deploy/.env.
+#
+#   docker compose -f deploy/docker-compose.bot.yml --env-file deploy/.env up -d --build
+
+name: perpetual-x-bot
+
+services:
+  bot:
+    build: {context: .., dockerfile: Dockerfile}
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - botdata:/opt/data
+    stop_grace_period: 60s
+    logging:
+      driver: json-file
+      options: {max-size: "20m", max-file: "5"}
+
+volumes:
+  botdata:
