@@ -1,121 +1,68 @@
-# Perpetual X — agency edition
+# Perpetual X
 
-An always-on X (Twitter) strategist for every client of the agency, built on
-[Hermes Agent](https://github.com/NousResearch/hermes-agent) with Claude.
+An AI agency assistant for X (Twitter), built on [Hermes Agent](https://github.com/NousResearch/hermes-agent)
+with Claude. **Everything happens in Slack.**
 
-- **Each employee runs one client** from that client's Slack channel. The bot hunts for tweets
-  to reply to, quote and repost, writes tweet and thread ideas in the client's voice, replies to
-  people who engaged, and reports what works.
-- **Approved posts go out with one tap.** `/post T3` in Slack, or **Post now** on the dashboard.
-- **The owner sees everything:** a web dashboard (leaderboard, growth, viral feed, competitors,
-  team, learning) and a **Main X agent** channel with a daily digest and weekly report.
-- **It learns:** every approval, edit, rejection and real result feeds each client's playbook
-  every week. Patterns that hold across clients go into a shared agency playbook. Each client's
-  voice stays its own.
+- **Perpetual (DM @Perpetual X):** the main agent. Ask it anything, as you would any AI assistant,
+  plus agency questions ("how are we doing?", "what's viral in cold email?"). It also adds,
+  changes and removes clients when you ask.
+- **One channel per client (`#x-<handle>`):** that client's own agent works there. It hunts
+  rising tweets and drafts tweets, threads, replies, quotes and reposts in the client's voice.
+  Every draft arrives as a **card** with **Approve / Edit / Reject / Post now / Open in X**
+  buttons. It learns from every click, edit and real result.
+- **`#main-x-agent`:** reports only (a daily digest, a weekly report and weekly learning).
+  Nobody chats there.
+- **The Home tab** (click Perpetual X → Home) is the dashboard. It shows a leaderboard of every
+  account with followers, views and their changes, a 28-day trend, engagement, suggestion use and
+  attention flags. It also shows the viral feed with **Draft for…**, team activity, what's being
+  learned, and a **Details** pop-up per client.
 
-## How it's built
+## Add a client: just ask
+> **You → Perpetual X:** add client @alexvacca, run by Shravya, niche cold email and Clay GTM, watch @michlieben
 
+Perpetual then:
+1. checks the handle on X and adds it to the scraping console,
+2. creates the public channel `#x-alexvacca` and invites Shravya and you,
+3. sets up the client's agent and restarts for about 20 seconds.
+
+Within a few minutes the client's agent learns the voice from their posts and says hello in the
+channel. Already made a channel? Invite the bot and say "#my-channel is for @alexvacca, run by Shravya".
+
+## Posting to X
+| Draft | **Post now** (one tap) | **Open in X** |
+|---|---|---|
+| Tweet, thread, reply to someone who engaged with the client | ✓ once X is connected | ✓ |
+| Reply, quote or repost on someone else's tweet | — (X doesn't allow apps to do this) | ✓ |
+
+To connect a client's X account, ask Perpetual for a **Connect X** link and open it while logged
+in to X as the client. The link goes to a small connector page, the only web page in the system.
+Only a person can post; the AI has no posting tool.
+
+## How it runs (free)
 ```
-Render
-├─ agency-bot   ONE Hermes container, multiplexed gateway, ONE Slack app
-│    ├─ default profile = Main X agent      → #main-x-agent
-│    └─ one profile per client in clients.yaml → its own channel (gateway.profile_routes)
-├─ agency-web   FastAPI dashboard · X account connections · /internal/post
-└─ agency-db    Postgres: suggestions, feedback, outcomes, daily metrics, viral feed, tokens
+Oracle Cloud (free)   Hermes multiplexed gateway: Perpetual (default profile) + one profile per client
+Neon (free)           Postgres: clients, suggestions, feedback, outcomes, metrics, viral feed, X tokens
+Render (free)         web/: the "Connect X" OAuth page only
 ```
 
 | Path | What it is |
 |---|---|
-| `clients.yaml` | The client roster: handle, Slack channel, employee, niche, watch list, timezone. |
-| `lib/perpetual_core/` | Shared code: settings, scraping-console client, ledger, agency views, schema, jobs. |
-| `hermes-template/plugins/perpetual/` | Client tools (X data, ledger) and the human-only `/post` command. |
-| `hermes-template/plugins/perpetual-hq/` | HQ tools: scorecards, team, viral feed, agency playbook. |
-| `hermes-template/skills/perpetual-x/` | One skill per client job, plus the learned `client-voice` and `playbook`. |
-| `hermes-template/hq/` | HQ persona and skills (digest, report, agency learning). |
-| `docker/reconcile.py` | Runs on every boot. Builds profiles, routes, schedules and the Main X agent from `clients.yaml`. |
-| `web/` | The dashboard. |
-| `slack-app-manifest.json` | The one Slack app. Paste it at api.slack.com/apps. |
-| `render.yaml` | Bot + web + Postgres. |
+| `lib/perpetual_core/` | Shared code: console client, ledger, agency views, Slack UI (`slackui.py`), X posting (`xpost.py`), schema, jobs |
+| `hermes-template/plugins/perpetual/` | Client agent tools (X data, ledger) and `/post` |
+| `hermes-template/plugins/perpetual-hq/` | Perpetual's tools, client management (`clients.py`), all Slack interactivity (`slackapp.py`) |
+| `hermes-template/skills/`, `hermes-template/hq/` | Client-agent and Perpetual personas and skills |
+| `docker/reconcile.py` | Builds profiles, routes, schedules and channel allowlists from the clients table (at boot, and again when clients change by chat) |
+| `deploy/` | Server setup and `docker-compose.bot.yml` |
+| `web/` | The X connector |
+| `slack-app-manifest.json` | The Slack app (Socket Mode, Home tab, buttons) |
 
-## Posting: what X allows
+## Slack app setup (once)
+Create the app from `slack-app-manifest.json`. If you created it from an older manifest, add these
+in the app settings and reinstall:
+- **Bot scopes:** `channels:manage` and `channels:join`.
+- **App Home:** turn on the Home tab.
 
-Since February 2026, X lets apps post only original tweets, threads, and replies to people who
-mentioned or quoted the client. So:
-
-| Suggestion | One tap (`/post`, Post now) | Open in X link |
-|---|---|---|
-| **T** tweet, **H** thread | ✓ | ✓ |
-| **E** reply to someone who engaged with the client | ✓ | ✓ |
-| **R** reply, **Q** quote, **P** repost on other people's tweets | — | ✓ (opens X with the copy ready) |
-
-Only a person can post. The model has no posting tool.
-
-## The schedule
-
-| When | Client channel | Main X agent channel |
-|---|---|---|
-| First boot | Learns the voice from 90 days of posts and says hello | Backfills 4 weeks of numbers |
-| Every 2 h, 08–20 | Reply, quote and repost hunt | — |
-| :15 and :45, 07–22 | Breakout alerts (silent unless something is taking off) | — |
-| 06:00 / 06:30 + 14:30 | — | Metrics and viral snapshots (no AI cost) |
-| 08:00 | Tweet and thread ideas | — |
-| 09:00 | — | Agency digest |
-| 13:00 | Engage-back replies | — |
-| Every 15 min | Dashboard requests ("draft for @client") | — |
-| 21:00 | Daily recap | — |
-| Mon | Weekly report (09:00) | Agency report (10:00) |
-| Sun | Learning review (22:00) | Agency learning (23:30) |
-
-Each client's times are in the client's timezone; the Main X agent uses `AGENCY_TIMEZONE`.
-
-**In a client channel:**
-- Feedback: `ok T3` · `edit R4: …` · `no Q2 too salesy` · `posted T3`
-- Publish: `/post T3`
-- Ask anything, e.g. paste a tweet URL, or "turn this into a tweet: …".
-
-## Set up once
-
-1. **Slack:** api.slack.com/apps → Create New App → From a manifest → paste
-   `slack-app-manifest.json`. First replace the redirect URL with your dashboard's address.
-   - Install the app.
-   - Note the bot token (`xoxb-`), an app-level token with `connections:write` (`xapp-`), and the client ID and secret.
-   - Create the Main X agent channel (e.g. `#main-x-agent`) and one channel per client, and invite the bot to each.
-2. **X:** create a developer app at developer.x.com.
-   - Type: Web App. Enable OAuth 2.0.
-   - Callback URL: `<dashboard>/x/callback`.
-   - Load pay-per-use credits.
-   - Note the client ID and secret.
-3. **Render:** push this repo to GitHub, then Render → New → Blueprint → pick the repo.
-   - Fill in the values Render asks for (see `.env.example`).
-   - Make `TOKEN_ENCRYPTION_KEY` with `python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"`.
-
-## Add a client
-
-```bash
-scripts/new-client.sh theirhandle "Their Name" --channel C0123ABCDEF --employee U0123ABCDEF \
-    --topics "cold email, Clay GTM" --watch "@peer1, @peer2" --tz Europe/London
-git commit -am "add @theirhandle" && git push
-```
-
-Then open their page on the dashboard and connect their X account.
-
-Use specific phrases for niche topics. They're searched exactly, so write "Clay GTM", not "clay".
-
-## Run locally
-
-```bash
-docker run -d --name px-pg -e POSTGRES_PASSWORD=px -e POSTGRES_DB=perpetual -p 55432:5432 postgres:17-alpine
-docker build -t perpetual-x-bot .
-# bot: pass the env vars from .env.example plus DATABASE_URL pointing at px-pg
-# dashboard:
-PYTHONPATH=lib DATABASE_URL=postgresql://postgres:px@localhost:55432/perpetual DASHBOARD_DEV_LOGIN=1 \
-  PUBLIC_URL=http://localhost:8000 uvicorn app:app --app-dir web
-# tests:
-DATABASE_URL=... XCONSOLE_API_KEY=... uv run --no-project --with "psycopg[binary]" tests/smoke_plugin.py
-```
-
-## Notes
-- **What a redeploy never overwrites:** learned state (voices, playbooks, memories, the database).
-  Job skills the agent has improved are also kept, unless `PX_RESEED_SKILLS=1`.
-- **Changing the schedule:** edit `docker/reconcile.py` and bump `CRON_VERSION`.
-- **Removing a client:** remove them from `clients.yaml`. This stops their jobs and keeps their history.
+## Deploy
+- **Bot:** on the server, run `git pull && docker compose -f deploy/docker-compose.bot.yml --env-file deploy/.env up -d --build`
+- **Connector:** Render redeploys from `render.yaml`.
+- **Tests:** `tests/test_slackui.py` (offline) and `tests/smoke_plugin.py` (needs `DATABASE_URL`).

@@ -1,5 +1,6 @@
-"""Agency-wide views: client roster sync, daily metric and viral snapshots, the overview the
-HQ agent and dashboard read, and dashboard→bot requests."""
+"""Agency-wide views: the client roster (managed by chat, stored in Postgres), daily metric and
+viral snapshots, the overview the Main X agent and the Slack Home tab read, and requests to a
+client's bot."""
 
 import json
 from datetime import date, datetime, timedelta, timezone
@@ -7,34 +8,65 @@ from datetime import date, datetime, timedelta, timezone
 from . import console
 
 VIRAL_MIN_LIKES = 150
+CLIENT_FIELDS = ("display_name", "niche_topics", "watch_accounts", "avoid_accounts", "timezone",
+                 "slack_channel", "employee_slack")
 
 
 def _today():
     return datetime.now(timezone.utc).date()
 
 
-# ---------------------------------------------------------------- roster
+def norm_handle(handle):
+    return (handle or "").strip().lstrip("@").lower()
+
+
+# ---------------------------------------------------------------- roster (Postgres is the source of truth)
+
+def upsert_client(conn, handle, **fields):
+    """Create or update a client. Only the fields passed (and not None) change; a new client is active."""
+    handle = norm_handle(handle)
+    if not handle:
+        raise ValueError("handle is required")
+    values = {k: _join(v) if k in ("niche_topics", "watch_accounts", "avoid_accounts") else v
+              for k, v in fields.items() if k in CLIENT_FIELDS and v is not None}
+    insert = {"display_name": handle, **values}            # a new client needs a display name
+    conn.execute(
+        f"""INSERT INTO clients(handle, active, updated_at, {", ".join(insert)})
+            VALUES (%s, TRUE, now(){", %s" * len(insert)})
+            ON CONFLICT (handle) DO UPDATE SET active = TRUE, updated_at = now()
+            {"".join(f", {k} = EXCLUDED.{k}" for k in values)}""",
+        [handle, *insert.values()])
+    conn.commit()
+    return get_client(conn, handle)
+
+
+def get_client(conn, handle):
+    return conn.execute("SELECT * FROM clients WHERE handle = %s", (norm_handle(handle),)).fetchone()
+
+
+def set_client_active(conn, handle, active):
+    row = conn.execute("UPDATE clients SET active = %s, updated_at = now() WHERE handle = %s RETURNING handle",
+                       (active, norm_handle(handle))).fetchone()
+    conn.commit()
+    return bool(row)
+
+
+def list_clients(conn, include_inactive=False):
+    q = "SELECT * FROM clients" + ("" if include_inactive else " WHERE active") + " ORDER BY handle"
+    return conn.execute(q).fetchall()
+
+
+def active_clients(conn):
+    return list_clients(conn)
+
 
 def sync_clients(conn, clients):
-    """Upsert clients.yaml entries into the clients table; deactivate ones removed from it."""
-    handles = []
+    """Seed from clients.yaml: upsert each entry. Clients added by chat are never touched here."""
     for c in clients:
-        handle = c["handle"].lstrip("@").lower()
-        handles.append(handle)
-        conn.execute(
-            """INSERT INTO clients(handle, display_name, niche_topics, watch_accounts, avoid_accounts,
-                                   timezone, slack_channel, employee_slack, active, updated_at)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,TRUE,now())
-               ON CONFLICT (handle) DO UPDATE SET display_name = EXCLUDED.display_name,
-                   niche_topics = EXCLUDED.niche_topics, watch_accounts = EXCLUDED.watch_accounts,
-                   avoid_accounts = EXCLUDED.avoid_accounts, timezone = EXCLUDED.timezone,
-                   slack_channel = EXCLUDED.slack_channel, employee_slack = EXCLUDED.employee_slack,
-                   active = TRUE, updated_at = now()""",
-            (handle, c.get("name") or handle, _join(c.get("niche_topics")), _join(c.get("watch_accounts")),
-             _join(c.get("avoid_accounts")), c.get("timezone") or "UTC", c.get("slack_channel"),
-             c.get("employee")))
-    conn.execute("UPDATE clients SET active = FALSE WHERE NOT (handle = ANY(%s))", (handles,))
-    conn.commit()
+        upsert_client(conn, c["handle"], display_name=c.get("name"), niche_topics=c.get("niche_topics"),
+                      watch_accounts=c.get("watch_accounts"), avoid_accounts=c.get("avoid_accounts"),
+                      timezone=c.get("timezone"), slack_channel=c.get("slack_channel"),
+                      employee_slack=c.get("employee"))
 
 
 def _join(v):
@@ -43,8 +75,35 @@ def _join(v):
     return ", ".join(v) if isinstance(v, (list, tuple)) else str(v)
 
 
-def active_clients(conn):
-    return conn.execute("SELECT * FROM clients WHERE active ORDER BY handle").fetchall()
+def console_onboard(handle, display_name):
+    """Put the client on the scraping console roster (daily tracking) and start a history harvest."""
+    handle = norm_handle(handle)
+    roster = console._request("GET", "/roster") or []
+    if not any((r.get("username") or "").lower() == handle for r in roster):
+        console._request("POST", "/roster", {"username": handle, "display_name": display_name or handle,
+                                             "group": "Agency clients"})
+        added = True
+    else:
+        added = False
+    console._request("POST", "/jobs", {"actor": "client-content", "input": {
+        "username": handle, "tabs": ["posts", "replies"], "limit": 300, "max_pages": 10}})
+    return {"added_to_roster": added, "harvest_started": True}
+
+
+def competitors(handle, watch_accounts, days=14):
+    """The client vs its watch accounts over the last `days` (live scrape; cache the result)."""
+    names = [norm_handle(handle)] + [norm_handle(w) for w in (watch_accounts or "").split(",") if w.strip()][:6]
+    rows = []
+    for name in names:
+        data = json.loads(console.x_user_tweets({"username": name, "since_days": days, "limit": 40}))
+        tweets = data.get("tweets") or []
+        n = len(tweets)
+        rows.append({"handle": name, "is_client": name == names[0], "posts": n,
+                     "avg_likes": round(sum(t.get("likes") or 0 for t in tweets) / n, 1) if n else None,
+                     "avg_views": round(sum(t.get("views") or 0 for t in tweets) / n) if n else None,
+                     "best": max(tweets, key=lambda t: t.get("likes") or 0) if tweets else None,
+                     "error": None if data.get("success") else data.get("error")})
+    return rows
 
 
 # ---------------------------------------------------------------- snapshots (no LLM)

@@ -1,7 +1,7 @@
-# Perpetual X — the dashboard on Render's free plan.
-# The Hermes bot runs on its own server (deploy/docker-compose.bot.yml) and the database is
-# external (e.g. Neon), so this Blueprint has just the web service. Free web services sleep
-# after 15 minutes idle and wake on the next request (~30-60 s).
+# Perpetual X — the X account connector on Render's free plan.
+# The agency runs in Slack (the Hermes bot on its own server, deploy/docker-compose.bot.yml) with
+# an external Postgres (e.g. Neon). This service only hosts the "Connect X" OAuth page that
+# Perpetual links to. Free web services sleep when idle and wake on the next request.
 # Secrets are `sync: false`: Render asks for them when the Blueprint is first applied.
 
 services:
@@ -16,28 +16,16 @@ services:
     envVars:
       - key: DATABASE_URL           # the same Postgres the bot uses
         sync: false
-      - key: PUBLIC_URL             # https://agency-web.onrender.com (or your domain)
+      - key: PUBLIC_URL             # this service's https URL; X redirects back to /x/callback
         sync: false
-      - key: INTERNAL_TOKEN         # must match the bot's INTERNAL_TOKEN
+      - key: INTERNAL_TOKEN         # must match the bot's: it signs the Connect X links
         sync: false
-      - key: DASHBOARD_PASSWORD     # password sign-in until Slack sign-in is set up (remove after)
+      - key: TOKEN_ENCRYPTION_KEY   # must match the bot's: X tokens are encrypted with it
+        sync: false
+      - key: SLACK_BOT_TOKEN        # to refresh cards' "Post now" buttons after connecting
         sync: false
       - key: SESSION_SECRET
         generateValue: true
-      - key: TOKEN_ENCRYPTION_KEY   # Fernet key; see README for the one-liner that makes one
-        sync: false
-      - key: XCONSOLE_API_KEY
-        sync: false
-      - key: XCONSOLE_URL
-        value: https://scraping.thought-pilot.co/api
-      - key: SLACK_CLIENT_ID
-        sync: false
-      - key: SLACK_CLIENT_SECRET
-        sync: false
-      - key: SLACK_TEAM_ID
-        sync: false
-      - key: OWNER_SLACK_IDS
-        sync: false
       - key: X_CLIENT_ID
         sync: false
       - key: X_CLIENT_SECRET

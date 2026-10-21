@@ -4,23 +4,25 @@ Toolsets:
   xconsole  read-only X data from the Thought Pilot scraping console (console.py)
   ledger    the shared suggestion ledger: save, feedback, outcomes, stats (ledger.py)
 
+Every saved suggestion is posted to the client's Slack channel as an interactive card
+(Approve / Edit / Reject / Post now / Open in X). The buttons are handled by the perpetual-hq
+plugin, which owns the Slack connection.
+
 Slash command:
-  /post <code>  human-only one-tap posting through the agency web app. The model has no
-                posting tool at all; only a person typing /post can publish.
+  /post <code>  human-only posting to X. The model has no posting tool at all; only a person
+                clicking Post now or typing /post can publish.
 """
 
 import json
 import os
 import sys
-import urllib.error
-import urllib.request
 
 # Shared code and psycopg live beside the image (/opt/perpetual/pylib), not in Hermes' venv.
 for _p in ("/opt/perpetual/pylib", os.environ.get("PERPETUAL_PYLIB")):
     if _p and os.path.isdir(_p) and _p not in sys.path:
         sys.path.append(_p)
 
-from perpetual_core import console, ledger  # noqa: E402
+from perpetual_core import console, ledger, slackui, xpost  # noqa: E402
 from perpetual_core.settings import client_handle, env, hermes_home  # noqa: E402
 
 
@@ -43,12 +45,28 @@ def _with_db(fn):
 
 
 def suggest_save(conn, client, p):
-    return _ok(saved=ledger.save(conn, client, p.get("items") or [], batch=p.get("batch")))
+    saved = ledger.save(conn, client, p.get("items") or [], batch=p.get("batch"))
+    try:
+        cards = slackui.post_cards(conn, client, [s["code"] for s in saved])
+    except Exception as e:  # noqa: BLE001 — cards are a convenience; the ledger row is what matters
+        cards, note = 0, f"cards not posted: {e}"
+    else:
+        if cards:
+            note = (f"{cards} card(s) posted to the client's channel with buttons. Do NOT repeat the drafts "
+                    "in your reply; just write a 1-2 line header for this batch.")
+        else:
+            note = "No client channel set, so no cards were posted: show the drafts in your reply."
+    return _ok(saved=saved, cards_posted=cards, note=note)
 
 
 def suggest_feedback(conn, client, p):
-    return _ok(**ledger.feedback(conn, client, p["code"], p["action"], text=p.get("text"),
-                                 note=p.get("note"), by=p.get("by")))
+    res = ledger.feedback(conn, client, p["code"], p["action"], text=p.get("text"),
+                          note=p.get("note"), by=p.get("by"))
+    try:
+        slackui.refresh_card(conn, client, res["code"])
+    except Exception:  # noqa: BLE001
+        pass
+    return _ok(**res)
 
 
 def suggest_list(conn, client, p):
@@ -153,44 +171,14 @@ LEDGER_TOOLS = [
 
 # ---------------------------------------------------------------- /post (human only)
 
-def _post_via_web(client, code, by):
-    url = (env("AGENCY_WEB_URL") or "").rstrip("/")
-    token = env("INTERNAL_TOKEN")
-    if not url or not token:
-        raise RuntimeError("AGENCY_WEB_URL / INTERNAL_TOKEN not configured")
-    req = urllib.request.Request(
-        url + "/internal/post", method="POST",
-        data=json.dumps({"client": client, "code": code, "by": by, "via": "slack"}).encode(),
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json",
-                 "User-Agent": "perpetual-x-bot/1.0"})
-    try:
-        # Generous timeout: a free-plan dashboard may need ~60 s to wake from sleep.
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            return json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        try:
-            return json.loads(e.read())
-        except ValueError:
-            return {"ok": False, "error": f"web app returned HTTP {e.code}"}
-
-
 def handle_post(raw_args, source=None, **_):
     if source is None or not getattr(source, "user_id", None):
         return "Posting only works from Slack, by a person."  # fail closed
     code = (raw_args or "").strip().split(" ")[0].upper()
     if not code:
-        return "Usage: /post T3  — posts suggestion T3 to X (use the edited version if there is one)."
+        return "Usage: /post T3  — posts suggestion T3 to X (the edited version if there is one)."
     by = getattr(source, "user_name", None) or source.user_id
-    client = client_handle()
-    try:
-        result = _post_via_web(client, code, by)
-    except Exception as e:  # noqa: BLE001
-        return f"Couldn't post {code}: {e}"
-    if result.get("ok"):
-        return f"✅ Posted {code} to @{client}: {result.get('url')}"
-    if result.get("intent_url"):
-        return f"{code} can't go out through the API ({result.get('error')}). Tap to post it yourself: {result['intent_url']}"
-    return f"Couldn't post {code}: {result.get('error')}"
+    return xpost.post_and_report(client_handle(), code, by, via="slack")
 
 
 def register(ctx):

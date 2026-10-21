@@ -5,12 +5,12 @@
   },
   "display_information": {
     "name": "Perpetual X",
-    "description": "Your agency X strategist: suggests tweets, replies, quotes and reposts per client, reports what works, and posts on approval.",
+    "description": "Perpetual: your agency AI. Chat with it about anything, manage clients, get drafts as cards with buttons, and see the dashboard in the Home tab.",
     "background_color": "#1a1a2e"
   },
   "features": {
     "app_home": {
-      "home_tab_enabled": false,
+      "home_tab_enabled": true,
       "messages_tab_enabled": true,
       "messages_tab_read_only_enabled": false
     },
@@ -314,6 +314,8 @@
         "app_mentions:read",
         "assistant:write",
         "channels:history",
+        "channels:join",
+        "channels:manage",
         "channels:read",
         "chat:write",
         "commands",
@@ -328,15 +330,8 @@
         "mpim:read",
         "reactions:read",
         "users:read"
-      ],
-      "user": [
-        "openid",
-        "profile"
       ]
-    },
-    "redirect_urls": [
-      "https://agency-web-hro0.onrender.com/login/slack/callback"
-    ]
+    }
   },
   "settings": {
     "event_subscriptions": {

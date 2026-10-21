@@ -18,4 +18,5 @@ own posts. Pick sparingly — at most 3 per day in total, so check `suggest_list
    a post that agrees with something the client stands for. Never: rage-bait, competitors' sales
    pitches, anything off-brand or that the client would need to defend.
 3. `targets_filter_new`, then `suggest_save` kind repost with target_id, target_url, target_by,
-   target_text and a one-line rationale (no text). Show the target and its Open in X link.
+   target_text and a one-line rationale (no text). The card with an Open in X
+   (repost) button is posted automatically.

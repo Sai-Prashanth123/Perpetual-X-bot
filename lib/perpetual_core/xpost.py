@@ -8,7 +8,6 @@ quotes and reposts on anyone else's tweets are refused by X, so those return the
 
 import base64
 import hashlib
-import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
@@ -16,7 +15,8 @@ from urllib.parse import urlencode
 import httpx
 from cryptography.fernet import Fernet
 
-from perpetual_core import ledger
+from . import ledger
+from .settings import env
 
 AUTHORIZE_URL = "https://x.com/i/oauth2/authorize"
 TOKEN_URL = "https://api.x.com/2/oauth2/token"
@@ -32,21 +32,21 @@ class PostRefused(Exception):
 
 
 def _fernet():
-    key = os.environ.get("TOKEN_ENCRYPTION_KEY")
+    key = env("TOKEN_ENCRYPTION_KEY")
     if not key:
         raise RuntimeError("TOKEN_ENCRYPTION_KEY is not set")
     return Fernet(key.encode())
 
 
 def _client_creds():
-    cid, secret = os.environ.get("X_CLIENT_ID"), os.environ.get("X_CLIENT_SECRET")
+    cid, secret = env("X_CLIENT_ID"), env("X_CLIENT_SECRET")
     if not cid:
         raise RuntimeError("X_CLIENT_ID is not set — create an X developer app first")
     return cid, secret
 
 
 def _redirect_uri():
-    return os.environ["PUBLIC_URL"].rstrip("/") + "/x/callback"
+    return (env("PUBLIC_URL") or env("AGENCY_WEB_URL") or "").rstrip("/") + "/x/callback"
 
 
 # ---------------------------------------------------------------- OAuth
@@ -178,3 +178,24 @@ def post_suggestion(conn, client, code, by, via):
     url = f"https://x.com/{client}/status/{tweet_id}"
     ledger.mark_published(conn, client, s["code"], tweet_id, url, text, by, via)
     return {"tweet_id": tweet_id, "url": url}
+
+
+def post_and_report(client, code, by, via):
+    """Post one suggestion, refresh its Slack card, and return a one-line message for chat."""
+    from . import slackui
+    conn = ledger.connect()
+    try:
+        try:
+            res = post_suggestion(conn, client, code, by=by, via=via)
+        except PostRefused as e:
+            if e.intent_url:
+                return f"{code} can't go out through the X API ({e}). Post it yourself: {e.intent_url}"
+            return f"Couldn't post {code}: {e}"
+        try:
+            slackui.refresh_card(conn, client, code.upper())
+        except Exception:  # noqa: BLE001 — the post went out; a stale card is cosmetic
+            pass
+        prefix = "Already posted" if res.get("already") else "✅ Posted"
+        return f"{prefix} {code.upper()} to @{client}: {res['url']}"
+    finally:
+        conn.close()

@@ -1,6 +1,8 @@
 """Boot-time reconciler for the agency bot (runs as the hermes user before the gateway starts).
 
-clients.yaml is the source of truth. On every boot this:
+The clients table in Postgres is the source of truth (clients are added by chatting with
+Perpetual; clients.yaml is only an optional seed). On every boot — and again, with
+--from-runtime, whenever a client is added or changed by chat — this:
   * applies the database schema and syncs the client roster into Postgres,
   * sets up the default profile as the HQ agent (#hq) holding the one shared Slack bot,
   * creates/refreshes one Hermes profile per client, routed from its Slack channel,
@@ -41,8 +43,21 @@ def log(msg):
     print(f"[perpetual] {msg}", flush=True)
 
 
+def _dotenv(path):
+    out = {}
+    if path.exists():
+        for line in path.read_text().splitlines():
+            if "=" in line and not line.lstrip().startswith("#"):
+                k, v = line.split("=", 1)
+                out[k.strip()] = v.strip().strip('"')
+    return out
+
+
+_SAVED = _dotenv(DATA / ".env")   # what the last boot wrote: the fallback for a --from-runtime run
+
+
 def env(name, default=None, required=False):
-    v = os.environ.get(name, default)
+    v = os.environ.get(name) or _SAVED.get(name) or default
     if required and not v:
         log(f"ERROR: {name} is not set — cannot start")
         sys.exit(1)
@@ -159,7 +174,7 @@ def skill_args(*skills):
 
 # ---------------------------------------------------------------- main
 
-def main():
+def main(runtime=False):
     shared = {
         "ANTHROPIC_API_KEY": env("ANTHROPIC_API_KEY", required=True),
         "XCONSOLE_API_KEY": env("XCONSOLE_API_KEY", required=True),
@@ -167,6 +182,10 @@ def main():
         "DATABASE_URL": env("DATABASE_URL", required=True),
         "AGENCY_WEB_URL": env("AGENCY_WEB_URL") or (f"http://{env('AGENCY_WEB_HOSTPORT')}" if env("AGENCY_WEB_HOSTPORT") else None),
         "INTERNAL_TOKEN": env("INTERNAL_TOKEN"),
+        # One-tap posting to X happens inside the bot (Slack "Post now" and /post).
+        "TOKEN_ENCRYPTION_KEY": env("TOKEN_ENCRYPTION_KEY"),
+        "X_CLIENT_ID": env("X_CLIENT_ID"),
+        "X_CLIENT_SECRET": env("X_CLIENT_SECRET"),
     }
     model = env("PX_MODEL", "claude-sonnet-5-5")
     learn_model = env("PX_LEARN_MODEL", "claude-opus-5-5")
@@ -174,9 +193,8 @@ def main():
     agency_tz = env("AGENCY_TIMEZONE", "UTC")
 
     roster_file = Path(env("PX_CLIENTS_FILE", str(SRC / "clients.yaml")))
-    clients = (yaml.load(roster_file.read_text()) or {}).get("clients") or []
-    clients = [dict(c) for c in clients]
-    log(f"{len(clients)} client(s) in {roster_file.name}")
+    seed = ((yaml.load(roster_file.read_text()) or {}).get("clients") or []) if roster_file.exists() else []
+    seed = [dict(c) for c in seed]
 
     # Scripts run outside any profile scope; give them the shared settings.
     shared_env = DATA / "perpetual-shared.env"
@@ -185,7 +203,13 @@ def main():
 
     conn = connect_with_retry()
     ledger.ensure_schema(conn)
-    agency.sync_clients(conn, clients)
+    if seed and not runtime:
+        agency.sync_clients(conn, seed)
+    clients = [{"handle": r["handle"], "name": r["display_name"], "slack_channel": r["slack_channel"],
+                "employee": r["employee_slack"], "timezone": r["timezone"], "niche_topics": r["niche_topics"],
+                "watch_accounts": r["watch_accounts"], "avoid_accounts": r["avoid_accounts"]}
+               for r in agency.active_clients(conn)]
+    log(f"{len(clients)} active client(s)")
 
     # ---- shared agency playbook (written by HQ, read by every client)
     seed_skills(TEMPLATE / "shared-skills", SHARED_SKILLS, learned={"agency-playbook"})
@@ -210,7 +234,9 @@ def main():
         brief.mkdir(parents=True, exist_ok=True)
         (brief / "SKILL.md").write_text(client_brief(c, handle, name))
         write_script(home, "px_requests.py", ["requests-pending", handle])
-        write_env(home, {**shared, "CLIENT_HANDLE": handle})
+        # PX_SLACK_TOKEN, not SLACK_BOT_TOKEN: a profile holding SLACK_BOT_TOKEN would start its own
+        # Slack connection for the same app (Hermes refuses duplicate credentials).
+        write_env(home, {**shared, "CLIENT_HANDLE": handle, "PX_SLACK_TOKEN": env("SLACK_BOT_TOKEN")})
         tz = c.get("timezone") or "UTC"
         edit_config(home, {
             "model.provider": "anthropic", "model.default": model, "timezone": tz,
@@ -237,11 +263,11 @@ def main():
         if not conn.execute("SELECT 1 FROM metrics_daily WHERE client = %s LIMIT 1", (handle,)).fetchone():
             needs_backfill.append(handle)
 
-    if needs_backfill:  # new clients: give the dashboard four weeks of history straight away
+    if needs_backfill:  # new clients: four weeks of history for the Home tab straight away
         log(f"backfilling 28 days of metrics for {', '.join(needs_backfill)}")
-        run_job("snapshot-metrics", "--backfill", "28")
+        run_job("snapshot-metrics", "--backfill", "28", background=runtime)
 
-    # Retire profiles whose client left clients.yaml: stop their jobs, keep their history.
+    # Retire profiles whose client was removed: stop their jobs, keep their history.
     active = {profile_slug(c["handle"]) for c in clients}
     for home in (DATA / "profiles").glob("*"):
         if home.is_dir() and home.name not in active and (home / ".perpetual-cron").exists():
@@ -249,7 +275,7 @@ def main():
             for name in sorted({w for w in listing.split() if w.startswith("px-")}):
                 hermes("cron", "remove", name, profile=home.name, check=False)
             (home / ".perpetual-cron").unlink()
-            log(f"retired profile {home.name} (no longer in clients.yaml)")
+            log(f"retired profile {home.name} (no longer an active client)")
 
     # ---- HQ (default profile): holds the one Slack bot and routes client channels.
     install_plugin(DATA, "perpetual-hq")
@@ -257,14 +283,16 @@ def main():
     seed_skills(TEMPLATE / "hq" / "skills", DATA / "skills" / "perpetual-hq")
     write_script(DATA, "px_metrics.py", ["snapshot-metrics"])
     write_script(DATA, "px_viral.py", ["snapshot-viral"])
-    if hq_channel:
-        channels.append(str(hq_channel))
+    # The bot converses only in client channels (and DMs, which Slack never gates). The report
+    # channel is deliberately left out, so messages there are ignored. An empty allowlist would
+    # mean "every channel", hence the placeholder while there are no clients yet.
     write_env(DATA, {
         **shared,
         "SLACK_BOT_TOKEN": env("SLACK_BOT_TOKEN"), "SLACK_APP_TOKEN": env("SLACK_APP_TOKEN"),
         "SLACK_ALLOWED_USERS": env("SLACK_ALLOWED_USERS"), "SLACK_HOME_CHANNEL": hq_channel,
-        # Answer in every agency channel without needing an @mention.
-        "SLACK_FREE_RESPONSE_CHANNELS": ",".join(channels) or None,
+        "SLACK_ALLOWED_CHANNELS": ",".join(channels) or "CNONE",
+        # Answer in client channels without needing an @mention.
+        "SLACK_FREE_RESPONSE_CHANNELS": ",".join(channels) or "CNONE",
     })
     edit_config(DATA, {
         "model.provider": "anthropic", "model.default": model, "timezone": agency_tz,
@@ -275,10 +303,12 @@ def main():
     fp = json.dumps([CRON_VERSION, hq_deliver, model, learn_model, agency_tz])
     if reconcile_cron(DATA, None, hq_jobs(hq_deliver, learn_model), fp):
         log(f"registered HQ cron jobs → {hq_deliver}")
-    if not conn.execute("SELECT 1 FROM viral_feed LIMIT 1").fetchone():
+    if not runtime and not conn.execute("SELECT 1 FROM viral_feed LIMIT 1").fetchone():
         run_job("snapshot-viral")
     conn.close()
-    log(f"ready: {len(clients)} client(s), {len(routes)} routed channel(s), HQ → {hq_deliver}")
+    log(f"ready: {len(clients)} client(s), {len(routes)} routed channel(s), reports → {hq_deliver}")
+    if runtime:
+        print(json.dumps({"clients": [c["handle"] for c in clients], "routes": len(routes)}))
 
 
 def connect_with_retry(attempts=8):
@@ -295,9 +325,14 @@ def connect_with_retry(attempts=8):
             time.sleep(min(5 * i, 30))
 
 
-def run_job(*args):
-    subprocess.run([PY, "-m", "perpetual_core.jobs", *args],
-                   env={**os.environ, "PYTHONPATH": "/opt/perpetual/pylib"}, check=False)
+def run_job(*args, background=False):
+    cmd = [PY, "-m", "perpetual_core.jobs", *args]
+    job_env = {**os.environ, "PYTHONPATH": "/opt/perpetual/pylib"}
+    if background:
+        subprocess.Popen(cmd, env=job_env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+    else:
+        subprocess.run(cmd, env=job_env, check=False)
 
 
 def client_brief(c, handle, name):
@@ -314,7 +349,7 @@ metadata:
     tags: [perpetual-x, config]
 ---
 
-# Client brief — generated from clients.yaml on every boot (edit clients.yaml, not this file)
+# Client brief — generated from the client's settings (change them by asking Perpetual, not here)
 
 - **Client:** {name} (@{handle})
 - **Niche topics:** {show(c.get('niche_topics'), 'not set — infer from their posts')}
@@ -383,4 +418,4 @@ def hq_jobs(deliver, learn_model):
 
 
 if __name__ == "__main__":
-    main()
+    main(runtime="--from-runtime" in sys.argv)

@@ -166,3 +166,7 @@ CREATE TABLE IF NOT EXISTS documents (           -- latest text of learned skill
     body            TEXT NOT NULL,
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- v3: each suggestion is an interactive Slack card; remember where it lives so it can be updated.
+ALTER TABLE suggestions ADD COLUMN IF NOT EXISTS slack_channel TEXT;
+ALTER TABLE suggestions ADD COLUMN IF NOT EXISTS slack_ts TEXT;

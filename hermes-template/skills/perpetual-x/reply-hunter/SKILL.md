@@ -33,5 +33,5 @@ They must make sense to someone reading only the original tweet.
 
 ## Save and show
 `suggest_save` kind reply, with target_id, target_url, target_text, target_by, hook, topic,
-batch "reply-hunter". Show the target (author, gist, likes, link), then the coded options, each with
-its Open in X link (replies to other people's tweets can't go through the API, so the link is how they post).
+batch "reply-hunter". Each option becomes a card (with the target shown)
+automatically; replies to other people's tweets go out through the card's Open in X button.

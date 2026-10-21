@@ -27,5 +27,5 @@ min_likes 150), after `targets_filter_new`, choose up to **2** tweets that:
 The copy must read well even if someone never opens the quoted tweet.
 
 ## Save and show
-`suggest_save` kind quote, with the target fields, hook, format, topic, batch "quote-hunter". Show each
-option with its Open in X link.
+`suggest_save` kind quote, with the target fields, hook, format, topic, batch "quote-hunter". The cards with
+buttons are posted automatically.

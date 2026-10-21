@@ -1,8 +1,10 @@
-"""perpetual-hq — agency-wide tools for the HQ agent (the default Hermes profile, #hq).
+"""perpetual-hq — the Main X agent (the default Hermes profile, Perpetual X in Slack DMs).
 
-Reads every client: scorecards, team activity, viral feed, learning, playbooks. Writes only
-the shared agency-playbook skill and dashboard-style requests to a client's bot. Read-only
-X data comes from the same console tools the client bots use.
+* Agency tools: scorecards, team activity, viral feed, learning, the shared agency playbook.
+* Client management by chat: add / update / remove / list clients (clients.py).
+* All Slack interactivity, because this profile owns the Slack connection: suggestion-card
+  buttons, edit/reject pop-ups, the Home tab dashboard and client details (slackapp.py).
+* /post from any client channel.
 """
 
 import json
@@ -13,7 +15,9 @@ for _p in ("/opt/perpetual/pylib", os.environ.get("PERPETUAL_PYLIB")):
     if _p and os.path.isdir(_p) and _p not in sys.path:
         sys.path.append(_p)
 
-from perpetual_core import agency, console, ledger  # noqa: E402
+from perpetual_core import agency, console, ledger, xpost  # noqa: E402
+
+from . import clients, slackapp  # noqa: E402
 from perpetual_core.settings import hermes_home, profile_slug  # noqa: E402
 
 AGENCY_PLAYBOOK_HEADER = """---
@@ -141,6 +145,25 @@ HQ_TOOLS = [
 ]
 
 
+def handle_post(raw_args, source=None, **_):
+    """/post typed in a client channel: the channel tells us which client."""
+    if source is None or not getattr(source, "user_id", None):
+        return "Posting only works from Slack, by a person."
+    code = (raw_args or "").strip().split(" ")[0].upper()
+    if not code:
+        return "Usage: /post T3 in the client's channel."
+    conn = ledger.connect()
+    try:
+        row = conn.execute("SELECT handle FROM clients WHERE slack_channel = %s AND active",
+                           (getattr(source, "chat_id", None),)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return "Use /post in a client's channel, e.g. /post T3 in #x-<client>."
+    by = getattr(source, "user_name", None) or source.user_id
+    return xpost.post_and_report(row["handle"], code, by, via="slack")
+
+
 def register(ctx):
     console.register(ctx, toolset="xconsole")
     for name, fn, description, props, required in HQ_TOOLS:
@@ -151,3 +174,16 @@ def register(ctx):
                     "parameters": {"type": "object", "properties": props, "required": required}},
             handler=_db(fn),
         )
+    for name, fn, description, props, required in clients.TOOLS:
+        ctx.register_tool(
+            name=name,
+            toolset="clients",
+            schema={"name": name, "description": description,
+                    "parameters": {"type": "object", "properties": props, "required": required}},
+            handler=_db(lambda conn, p, _fn=fn: _ok(**_fn(conn, p))),
+        )
+    for action_id, callback in slackapp.ACTIONS:
+        ctx.register_slack_action_handler(action_id, callback)
+    ctx.register_platform_handler("slack", slackapp.slack_factory)
+    ctx.register_command("post", handler=handle_post,
+                         description="Post a suggestion to X now, e.g. /post T3", args_hint="<code>")
