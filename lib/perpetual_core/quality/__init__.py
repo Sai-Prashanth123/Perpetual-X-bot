@@ -185,7 +185,8 @@ def lineup_prompt(draft, real_posts, seed=None):
 
 LINEUP_SCHEMA = {"type": "object", "properties": {
     "suspect": {"type": "integer"}, "confidence": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
-    "tells": {"type": "array", "items": {"type": "string"}}}, "required": ["suspect", "confidence", "tells"]}
+    "tells": {"type": "array", "items": {"type": "string"}}}, "required": ["suspect", "confidence", "tells"],
+    "additionalProperties": False}
 
 
 def lineup_verdict(parsed, answer):
