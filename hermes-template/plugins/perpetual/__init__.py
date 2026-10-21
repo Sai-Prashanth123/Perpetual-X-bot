@@ -66,6 +66,8 @@ def suggest_feedback(conn, client, p):
         slackui.refresh_card(conn, client, res["code"])
     except Exception:  # noqa: BLE001
         pass
+    from perpetual_core import agency
+    agency.console_pick(conn, client, res["code"], p["action"])
     return _ok(**res)
 
 

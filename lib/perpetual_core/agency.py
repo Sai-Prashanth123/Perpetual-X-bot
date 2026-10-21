@@ -360,3 +360,50 @@ def teammates(conn, handle):
     return [r["handle"] for r in conn.execute(
         "SELECT handle FROM clients WHERE active AND company = %s AND handle <> %s ORDER BY handle",
         (row["company"], row["handle"]))]
+
+
+def import_console_replies(conn, client):
+    """Bring the console reply agent's pending drafts into the client's channel as reply cards.
+    One card per target tweet: the first safe option is the draft, the others go in the card's notes.
+    Targets already handled (by us or an earlier import) are skipped. Returns the new codes."""
+    from . import ledger, slackui
+    console_name = client
+    roster = {r["username"].lower(): r["username"] for r in (console._request("GET", "/reply/clients") or {}).get("clients", [])}
+    if client not in roster:
+        return []
+    console_name = roster[client]
+    items = []
+    for d in console.reply_drafts(console_name):
+        src = d.get("source") or {}
+        tid = src.get("tweet_id")
+        options = [o for o in d.get("options") or [] if o.get("safe", True) and o.get("text")]
+        if not tid or not options or ledger.filter_new_targets(conn, client, [tid]) == []:
+            continue
+        alternatives = " | ".join(f"({i}) {o['text']}" for i, o in enumerate(options[1:], 2))
+        items.append({"kind": "reply", "text": options[0]["text"], "target_id": tid, "target_url": src.get("url"),
+                      "target_text": src.get("text"), "target_by": src.get("author"),
+                      "rationale": "From the console's reply agent" + (f". Other options: {alternatives}" if alternatives else ""),
+                      "topic": f"console:{d['id']}:0"})
+    if not items:
+        return []
+    saved = ledger.save(conn, client, items, batch="console-reply")
+    slackui.post_cards(conn, client, [s["code"] for s in saved])
+    return [s["code"] for s in saved]
+
+
+def console_pick(conn, client, code, action="approve"):
+    """If a suggestion came from the console's reply agent, report the outcome back to it:
+    approve/posted -> the option used, edit -> the team's final text, reject -> dismissed."""
+    row = conn.execute("SELECT topic, final_text FROM suggestions WHERE client = %s AND code = %s AND batch = 'console-reply'",
+                       (client, code)).fetchone()
+    if not row or not (row["topic"] or "").startswith("console:"):
+        return False
+    _, draft_id, index = row["topic"].split(":")
+    try:
+        if action == "reject":
+            console.reply_pick(int(draft_id), dismiss=True)
+        else:
+            console.reply_pick(int(draft_id), index=int(index), final_text=row["final_text"])
+        return True
+    except Exception:  # noqa: BLE001 — feedback to the console is best-effort
+        return False

@@ -177,6 +177,8 @@ def post_suggestion(conn, client, code, by, via):
         tweet_id = _create(token, text)
     url = f"https://x.com/{client}/status/{tweet_id}"
     ledger.mark_published(conn, client, s["code"], tweet_id, url, text, by, via)
+    from . import agency
+    agency.console_pick(conn, client, s["code"], "posted")
     return {"tweet_id": tweet_id, "url": url}
 
 

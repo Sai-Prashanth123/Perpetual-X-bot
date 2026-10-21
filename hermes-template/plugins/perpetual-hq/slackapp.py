@@ -50,6 +50,7 @@ async def _run(fn, *args, **kwargs):
 def _feedback(conn, client, code, action, by, text=None, note=None):
     ledger.feedback(conn, client, code, action, text=text, note=note, by=by)
     slackui.refresh_card(conn, client, code)
+    agency.console_pick(conn, client, code, action)   # drafts from the console's reply agent learn from this
 
 
 async def on_approve(ack, body, action):

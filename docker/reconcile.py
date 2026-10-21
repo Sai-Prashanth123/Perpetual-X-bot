@@ -284,6 +284,7 @@ def main(runtime=False):
         brief.mkdir(parents=True, exist_ok=True)
         (brief / "SKILL.md").write_text(client_brief(c, handle, name))
         write_script(home, "px_requests.py", ["requests-pending", handle])
+        write_script(home, "px_console.py", ["console-replies", handle])
         # PX_SLACK_TOKEN, not SLACK_BOT_TOKEN: a profile holding SLACK_BOT_TOKEN would start its own
         # Slack connection for the same app (Hermes refuses duplicate credentials).
         write_env(home, {**shared, "CLIENT_HANDLE": handle, "PX_SLACK_TOKEN": env("SLACK_BOT_TOKEN")})
@@ -486,6 +487,8 @@ def client_jobs(deliver, learn_model, offset=0):
          "prompt": "New requests from the agency dashboard arrived: follow agency-requests.",
          "args": common + skill_args(*base, "agency-requests", "weekly-package", *formats, "tweet-ideas")
                  + ["--monitor-script", "px_requests.py"]},
+        {"name": "px-console-replies", "schedule": f"{offset % 30},{offset % 30 + 30} 8-21 * * *", "prompt": "",
+         "args": ["--deliver", deliver, "--no-agent", "--script", "px_console.py"]},
         {"name": "px-package", "schedule": f"{offset} 9 * * 1",
          "prompt": "Produce this week's content package: follow weekly-package end to end.",
          "args": common + skill_args(*base, "weekly-package", *formats)

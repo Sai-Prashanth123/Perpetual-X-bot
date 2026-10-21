@@ -349,3 +349,17 @@ def register(ctx, toolset="xconsole"):
                     "parameters": {"type": "object", "properties": props, "required": required}},
             handler=_tool(fn),
         )
+
+
+# ---------------------------------------------------------------- the console's reply agent
+
+def reply_drafts(client, status="pending", limit=20):
+    """Reply drafts the console's own reply agent wrote for `client` (3 options per target tweet)."""
+    data = _request("GET", "/reply/drafts", params={"client": client, "status": status, "limit": limit}) or {}
+    return data.get("drafts", [])
+
+
+def reply_pick(draft_id, index=None, final_text=None, dismiss=False):
+    """Tell the console which option the team used (or that it was dismissed), so its reply agent learns."""
+    body = {"dismiss": True} if dismiss else {"index": index, "final_text": final_text}
+    return _request("POST", f"/reply/drafts/{draft_id}/pick", body)

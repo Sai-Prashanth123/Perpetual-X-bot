@@ -3,6 +3,7 @@
     python -m perpetual_core.jobs snapshot-metrics [--backfill DAYS]
     python -m perpetual_core.jobs snapshot-viral
     python -m perpetual_core.jobs requests-pending <client>     # cron monitor script
+    python -m perpetual_core.jobs console-replies <client>      # import the console reply agent's drafts
     python -m perpetual_core.jobs apply-changes <user_id> <summary>   # background setup + DM receipts
 
 Cron scripts run as plain subprocesses, outside any profile's secret scope, so shared
@@ -44,6 +45,11 @@ def main(argv):
                 print("⚠️ metrics snapshot stored nothing — is the scraping console reachable?")
         elif cmd == "snapshot-viral":
             agency.snapshot_viral(conn)
+        elif cmd == "console-replies":
+            # Silent unless there's something new (a --no-agent cron delivers stdout verbatim).
+            codes = agency.import_console_replies(conn, argv[1].lower())
+            if codes:
+                print(f"{len(codes)} reply draft(s) from the console's reply agent: {', '.join(codes)}")
         elif cmd == "requests-pending":
             # Monitor script: output only changes when there is new work, so an unchanged
             # (empty) result suppresses the agent run entirely.
