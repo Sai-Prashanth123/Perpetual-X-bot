@@ -31,6 +31,7 @@ Default batch: **5 tweets + 1 thread outline** (on demand: what was asked, defau
   (that is how `/post` splits it into a real thread).
 
 ## Save and show
-`suggest_save` with kind tweet/thread, hook, format, topic, rationale, batch "tweet-ideas".
-Cards are posted automatically; your reply is a short header. End it with one line on the best time to post today, if the playbook or
+`suggest_save` with kind tweet/thread, hook, format, topic, rationale, batch "tweet-ideas", `cards: false`,
+then one document with `publish_document` (kind `answer`) listing each idea with its code, copy and why.
+For one or two quick drafts, leave `cards` on instead and skip the document. End it with one line on the best time to post today, if the playbook or
 `x_client_analytics kind=rhythm` supports one.

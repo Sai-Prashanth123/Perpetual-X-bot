@@ -33,5 +33,6 @@ They must make sense to someone reading only the original tweet.
 
 ## Save and show
 `suggest_save` kind reply, with target_id, target_url, target_text, target_by, hook, topic,
-batch "reply-hunter". Each option becomes a card (with the target shown)
-automatically; replies to other people's tweets go out through the card's Open in X button.
+batch "reply-hunter", `cards: false`. Then publish them as one document (`publish_document`, kind
+`answer`, reply-pack layout from `doc-templates`): each target tweet quoted, the reply options under it with
+codes and Open in X links.

@@ -17,6 +17,6 @@ metadata:
      suggestions used/posted. Sorted by views.
    - **Needs attention** — every flag from the overview, each with the one action that fixes it.
    - **Viral today** — the 5 biggest tweets across niches: author, gist, likes, link, and which
-     client should jump on it (then `agency_request` that client's bot with "draft replies and a
+     client should jump on it (then `delegate_to_client` that client's agent with "draft replies and a
      quote for <url>" — at most 3 requests).
    - **Team** — per employee: actions, posted, median minutes to act. Call out great work too.

@@ -4,9 +4,10 @@ Toolsets:
   xconsole  read-only X data from the Thought Pilot scraping console (console.py)
   ledger    the shared suggestion ledger: save, feedback, outcomes, stats (ledger.py)
 
-Every saved suggestion is posted to the client's Slack channel as an interactive card
-(Approve / Edit / Reject / Post now / Open in X). The buttons are handled by the perpetual-hq
-plugin, which owns the Slack connection.
+Answers are published as documents (a Slack canvas, or a tidy thread when canvases aren't
+available) with one short summary message in the client's channel. A single quick draft can still
+be posted as an interactive card (Approve / Edit / Reject / Post now / Open in X); the buttons are
+handled by the perpetual-hq plugin, which owns the Slack connection.
 
 Slash command:
   /post <code>  human-only posting to X. The model has no posting tool at all; only a person
@@ -46,6 +47,9 @@ def _with_db(fn):
 
 def suggest_save(conn, client, p):
     saved = ledger.save(conn, client, p.get("items") or [], batch=p.get("batch"))
+    if p.get("cards") is False:
+        return _ok(saved=saved, cards_posted=0,
+                   note="Saved without cards. Put each code (and its Open in X link) in the document you publish.")
     try:
         cards = slackui.post_cards(conn, client, [s["code"] for s in saved])
     except Exception as e:  # noqa: BLE001 — cards are a convenience; the ledger row is what matters
@@ -181,7 +185,7 @@ def request_article_qrts(conn, client, p):
             f"Article text: {(art.get('final_text') or art['text'])[:2500]}"), by=client)
         asked.append(who)
     return _ok(article=code, requested_from=asked,
-               note="Teammates' agents pick these up within 15 minutes; promo cards land in their channels.")
+               note="Teammates' agents pick these up within a few minutes and publish the promo QRTs in their channels.")
 
 
 def notify_team(conn, client, p):
@@ -189,6 +193,43 @@ def notify_team(conn, client, p):
     from perpetual_core import notify
     sent = notify.dm(notify.client_watchers(conn, client), f"@{client}: {p['text']}")
     return _ok(sent_to=sent)
+
+
+def publish_document(conn, client, p):
+    """One answer = one document in the client's channel (canvas, or thread fallback) + a summary line."""
+    from perpetual_core import notify
+    res = slackui.publish_doc(conn, client, p["title"], p["markdown"], p["summary"],
+                              kind=p.get("kind") or "answer", asked_by=p.get("asked_by_slack"))
+    dm_to = [u for u in (p.get("dm_to") or []) if u]
+    if dm_to and res.get("link"):
+        notify.dm(dm_to, f"✅ @{client}: *{p['title']}* is ready → {res['link']}\n{p['summary'][:300]}")
+    note = ("Published. Do NOT repeat the document in your reply: reply with one short line at most "
+            "(or nothing, in a scheduled job, the summary message is already in the channel).")
+    return _ok(**res, dm_sent_to=dm_to, instructions=note)
+
+
+def research_memory(conn, client, p):
+    from perpetual_core import research
+    if p.get("action") == "add":
+        row = research.add(conn, client, p.get("kind") or "note", p.get("title"), p.get("body"), p.get("sources"))
+        return _ok(saved=row)
+    return _ok(findings=research.recent(conn, client, days=p.get("days") or 30, kind=p.get("kind"),
+                                        limit=p.get("limit") or 20),
+               recent_documents=research.recent_docs(conn, client))
+
+
+def console_reply_drafts(conn, client, p):
+    """Reply options the scraping console's own reply agent prepared for this client (read only)."""
+    roster = {r["username"].lower(): r["username"] for r in (console._request("GET", "/reply/clients") or {}).get("clients", [])}
+    if client not in roster:
+        return _ok(drafts=[], note="This client isn't on the console's reply-agent roster.")
+    out = []
+    for d in console.reply_drafts(roster[client], limit=p.get("limit") or 15):
+        src = d.get("source") or {}
+        out.append({"draft_id": d["id"], "target_url": src.get("url"), "target_by": src.get("author"),
+                    "target_text": (src.get("text") or "")[:400],
+                    "options": [o["text"] for o in d.get("options") or [] if o.get("safe", True) and o.get("text")]})
+    return _ok(drafts=out, note="Treat these as raw material: rewrite in the client's voice and run content-pipeline.")
 
 
 def agency_requests_take(conn, client, p):
@@ -222,7 +263,9 @@ LEDGER_TOOLS = [
          "parent_client": {**_STR, "description": "For qrt_promo: whose article it promotes."},
          "parent_code": {**_STR, "description": "For qrt_promo: the article's code, e.g. A3."}},
          "required": ["kind"]}},
-      "batch": {**_STR, "description": "Which job produced these, e.g. reply-hunter."}},
+      "batch": {**_STR, "description": "Which job produced these, e.g. reply-hunter."},
+      "cards": {"type": "boolean", "description": "false = save to the ledger only (the drafts go in a document "
+                                                  "you publish with publish_document). Default true = one card each."}},
      ["items"]),
     ("suggest_feedback", suggest_feedback,
      "Record feedback on a suggestion. action: approve | edit (pass the new version as text) | "
@@ -280,9 +323,35 @@ LEDGER_TOOLS = [
      "this week's package delivered with codes, a problem that needs a human. One or two sentences.",
      {"text": _STR},
      ["text"]),
+    ("publish_document", publish_document,
+     "Publish your answer as ONE readable document in the client's Slack channel: a canvas (or, if "
+     "canvases are unavailable, a tidy thread) plus a short summary message with an Open document button. "
+     "Use it for every substantial answer: reply packs, content packages, research, briefs, reports. "
+     "Write `markdown` with # / ## headings, bullets, > quotes and [text](url) links; no tables.",
+     {"title": {**_STR, "description": "e.g. 'Replies for: The 70-Signal Timing System (Oct 21)'."},
+      "markdown": {**_STR, "description": "The full document (follow doc-templates)."},
+      "summary": {**_STR, "description": "2-4 short lines for the channel: what's inside and what to do first."},
+      "kind": {"type": "string", "enum": ["reply-pack", "package", "brief", "research", "report", "answer"]},
+      "asked_by_slack": {**_STR, "description": "Slack user id of whoever asked (from the request), if known."},
+      "dm_to": {"type": "array", "items": _STR, "description": "Slack user ids to DM the link to (the requester)."}},
+     ["title", "markdown", "summary"]),
+    ("research_memory", research_memory,
+     "Your research notebook about this client. action=read (default): recent findings (performance, "
+     "competitors, niche, growth, content) and recently published documents. Read it BEFORE answering "
+     "anything strategic. action=add: save one finding with its sources (URLs, tweet links, numbers).",
+     {"action": {"type": "string", "enum": ["read", "add"]},
+      "kind": {"type": "string", "enum": ["performance", "competitors", "niche", "growth", "content", "note"]},
+      "title": _STR, "body": {**_STR, "description": "The finding, specific, with numbers."},
+      "sources": {"type": "array", "items": _STR}, "days": _INT, "limit": _INT},
+     []),
+    ("console_reply_drafts", console_reply_drafts,
+     "Reply options the scraping console's own reply agent already prepared for this client (target tweet "
+     "+ options). Raw material for reply work; nothing is posted or shown until you publish.",
+     {"limit": _INT}, []),
     ("agency_requests_take", agency_requests_take,
-     "Take this client's pending requests from the agency dashboard (e.g. 'draft a quote for <url>'). "
-     "Each request is returned once; handle every one.",
+     "Take this client's pending requests (handed over by Perpetual or a teammate's agent). Each comes "
+     "with by_name and requester_slack: pass requester_slack as asked_by_slack and in dm_to when you "
+     "publish the result. Each request is returned once; handle every one.",
      {},
      []),
 ]

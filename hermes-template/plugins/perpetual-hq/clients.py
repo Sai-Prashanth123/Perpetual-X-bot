@@ -202,14 +202,14 @@ def run_package(conn, p):
     who = _requester()
     for c in targets:
         agency.add_request(conn, c["handle"], "Produce your weekly content package now: follow weekly-package.",
-                           by=slackui.person_name(who) if who else "Perpetual")
+                           by=slackui.person_name(who) if who else "Perpetual", requester_slack=who)
         if who:
             conn.execute("UPDATE clients SET added_by = COALESCE(added_by, %s) WHERE handle = %s", (who, c["handle"]))
     conn.commit()
     return {"queued": [c["handle"] for c in targets],
             "skipped_no_channel": skipped or [c["handle"] for c in agency.list_clients(conn) if not c["slack_channel"]][:20],
-            "next": ("Each client's agent starts within 15 minutes, one at a time on this server. Cards land in "
-                     "each client's channel and each client DMs a one-line summary when its package is done.")}
+            "next": ("Each client's agent starts within a few minutes, one at a time on this server. Each publishes "
+                     "its package as one document in its channel and DMs the requester the link.")}
 
 
 def content_report(conn, p):

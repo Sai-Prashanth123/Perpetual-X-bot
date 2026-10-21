@@ -531,3 +531,109 @@ def refresh_card(conn, client, code):
     slack("chat.update", channel=s["slack_channel"], ts=s["slack_ts"],
           blocks=suggestion_blocks(dict(s), _x_connected(conn, client)), text=suggestion_fallback_text(s))
     return True
+
+
+# ---------------------------------------------------------------- documents (canvas, or a tidy thread)
+
+_auth = {}
+
+
+def _workspace():
+    if not _auth:
+        _auth.update(slack("auth.test"))
+    return _auth
+
+
+def md_to_mrkdwn(md):
+    """Markdown → Slack mrkdwn for the thread fallback (headings, bold, links, bullets)."""
+    import re
+    out = []
+    for line in (md or "").splitlines():
+        h = re.match(r"^\s*#{1,6}\s+(.*)$", line)
+        if h:
+            line = f"*{h.group(1).strip().strip('*')}*"
+        elif re.match(r"^\s*[-*]\s+", line) and not re.match(r"^\s*[-*]{3,}\s*$", line):
+            line = re.sub(r"^(\s*)[-*]\s+", lambda m: m.group(1) + "• ", line)
+        elif re.match(r"^\s*([-*_])\1{2,}\s*$", line):
+            line = "──────────"
+        line = re.sub(r"\*\*(.+?)\*\*", r"*\1*", line)
+        line = re.sub(r"(?<![\w*])__(.+?)__(?![\w*])", r"_\1_", line)
+        line = re.sub(r"\[([^\]]+)\]\((https?://[^)\s]+)\)", r"<\2|\1>", line)
+        out.append(line)
+    return "\n".join(out)
+
+
+def doc_chunks(md, limit=2900):
+    """Split a document at its ## sections, then at paragraphs, so each Slack message stays readable."""
+    import re
+    sections, cur = [], []
+    for line in (md or "").splitlines():
+        if re.match(r"^\s*#{1,2}\s+", line) and cur:
+            sections.append("\n".join(cur).strip())
+            cur = []
+        cur.append(line)
+    if cur:
+        sections.append("\n".join(cur).strip())
+    chunks = []
+    for sec in filter(None, sections):
+        text = md_to_mrkdwn(sec)
+        while len(text) > limit:
+            cut = text.rfind("\n\n", 0, limit)
+            cut = cut if cut > limit // 3 else text.rfind("\n", 0, limit)
+            cut = cut if cut > 0 else limit
+            chunks.append(text[:cut].strip())
+            text = text[cut:].strip()
+        if text:
+            chunks.append(text)
+    return chunks
+
+
+def doc_summary_blocks(title, summary, link=None, mode="canvas", asked_by=None):
+    blocks = [{"type": "header", "text": {"type": "plain_text", "text": title[:150], "emoji": True}},
+              {"type": "section", "text": {"type": "mrkdwn", "text": md_to_mrkdwn(summary)[:2900] or " "}}]
+    if link and mode == "canvas":
+        blocks.append({"type": "actions", "elements": [
+            {"type": "button", "action_id": "px_open_doc", "style": "primary", "url": link,
+             "text": {"type": "plain_text", "text": "Open document"}}]})
+    where = "Full document: open it above." if mode == "canvas" else "Full document: in this thread 🧵"
+    who = f"Asked by <@{asked_by}>. " if asked_by else ""
+    blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text":
+                   f"{who}{where} Reply here to ask for changes; react with codes like `ok R3` to approve."}]})
+    return blocks
+
+
+def publish_doc(conn, client, title, markdown, summary, kind="answer", asked_by=None):
+    """Publish a document for a client: a Slack canvas in its channel plus one short summary message,
+    or (when canvases aren't available) the summary with the document laid out in its thread.
+    Returns {mode, link, channel, ts, note}."""
+    from . import research
+    row = conn.execute("SELECT slack_channel FROM clients WHERE handle = %s", (client,)).fetchone()
+    channel = row and row["slack_channel"]
+    if not channel:
+        raise SlackError("this client has no Slack channel yet")
+    note, mode, link = None, "thread", None
+    try:
+        res = slack("canvases.create", title=title[:255], channel_id=channel,
+                    document_content={"type": "markdown", "markdown": markdown})
+        canvas_id = res["canvas_id"]
+        try:
+            slack("canvases.access.set", canvas_id=canvas_id, access_level="write", channel_ids=[channel])
+        except SlackError:
+            pass
+        ws = _workspace()
+        link = f"{ws['url'].rstrip('/')}/docs/{ws['team_id']}/{canvas_id}"
+        mode = "canvas"
+    except SlackError as e:
+        note = f"canvas unavailable ({e}); used a thread instead"
+    msg = slack("chat.postMessage", channel=channel, text=f"{title}: {summary[:200]}", unfurl_links=False,
+                blocks=doc_summary_blocks(title, summary, link, mode, asked_by))
+    if mode == "thread":
+        for part in doc_chunks(markdown):
+            slack("chat.postMessage", channel=channel, thread_ts=msg["ts"], text=part,
+                  unfurl_links=False, unfurl_media=False)
+        try:
+            link = slack("chat.getPermalink", channel=channel, message_ts=msg["ts"])["permalink"]
+        except SlackError:
+            link = None
+    research.log_doc(conn, client, title, kind, mode, link, channel, msg["ts"])
+    return {"mode": mode, "link": link, "channel": channel, "ts": msg["ts"], "note": note}

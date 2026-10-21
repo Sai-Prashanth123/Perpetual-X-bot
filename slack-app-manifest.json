@@ -316,6 +316,7 @@
         "channels:history",
         "channels:join",
         "channels:manage",
+        "canvases:write",
         "channels:read",
         "chat:write",
         "commands",

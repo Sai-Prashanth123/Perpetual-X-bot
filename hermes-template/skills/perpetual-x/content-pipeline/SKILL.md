@@ -10,7 +10,7 @@ metadata:
 
 # Content pipeline (human-grade, fact-checked, referenced)
 
-Nothing reaches a card unless it clears this. If a draft can't clear it in 3 passes, don't ship
+Nothing reaches the team unless it clears this. If a draft can't clear it in 3 passes, don't ship
 it: say what blocked it (in one line) instead.
 
 1. **Load the law.** `client-voice` (+ its `references/receipts.md` and the format guide for this
@@ -32,5 +32,8 @@ it: say what blocked it (in one line) instead.
 9. **Blind lineup.** `blind_lineup` → if the judge catches it, rewrite the lines it named.
 10. **Algo score.** Score with `agency-writing-standards/references/x-algo-scorer.md` (0–100).
 11. **Save.** `suggest_save` with `references` (from fact_check), `factcheck` (its summary + claims),
-    `scores` `{voice, hook, substance, anti_ai, lineup, algo}`, plus hook / format / topic / rationale.
-    The card shows all of it to the team.
+    `scores` `{voice, hook, substance, anti_ai, lineup, algo}`, plus hook / format / topic / rationale,
+    and `cards: false`.
+12. **Publish.** Put the saved drafts (codes, copy, Open in X links, scores, fact-check, sources) in ONE
+    document with `publish_document`, laid out per `doc-templates`. Only a single quick draft someone
+    asked for may go out as a card instead (leave `cards` on).

@@ -29,3 +29,8 @@ metadata:
 8. **Next week** — 3 concrete focuses.
 
 Never invent numbers. If data is missing, say what's missing.
+
+## Deliver
+Also read `research_memory` and save this week's key finding to it (kind performance). Publish the
+report with `publish_document` (kind `report`, weekly-report template from `doc-templates`); the
+summary is the headline plus the 3 focuses. Then reply `[SILENT]`.

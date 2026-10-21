@@ -213,9 +213,10 @@ async def on_draft_for(ack, body, action):
     await ack()
     v = _value(action)
     who = _who(body)
-    await _run(_db, agency.add_request, v["c"], f"Draft 3 replies and 2 quote tweets for {v['u']}", who)
+    await _run(_db, agency.add_request, v["c"], f"Draft 3 replies and 2 quote tweets for {v['u']}", who,
+               body["user"]["id"])
     await _run(slackui.slack, "chat.postMessage", channel=body["user"]["id"],
-               text=f"Sent to @{v['c']}'s agent. Drafts for {v['u']} will land in its channel within 15 minutes.")
+               text=f"Sent to @{v['c']}'s agent. You'll get a DM with the drafts' link in a few minutes.")
 
 
 async def on_view_playbook(ack, body, action):
@@ -262,7 +263,7 @@ async def on_client_details(ack, body, action):
 
 ACTIONS = [
     ("px_approve", on_approve), ("px_edit", on_edit), ("px_reject", on_reject), ("px_post", on_post),
-    ("px_open", on_open), ("px_home_1", _window_handler(1)), ("px_home_7", _window_handler(7)),
+    ("px_open", on_open), ("px_open_doc", on_open), ("px_home_1", _window_handler(1)), ("px_home_7", _window_handler(7)),
     ("px_home_28", _window_handler(28)), ("px_home_refresh", _window_handler(7)),
     ("px_draft_for", on_draft_for), ("px_view_playbook", on_view_playbook),
     ("px_client_details", on_client_details), ("px_article_posted", on_article_posted),

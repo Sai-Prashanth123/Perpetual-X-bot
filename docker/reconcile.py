@@ -18,6 +18,7 @@ import os
 import shutil
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 
 sys.path.append("/opt/perpetual/pylib")
@@ -31,6 +32,7 @@ DATA = Path(os.environ.get("HERMES_HOME", "/opt/data"))
 SRC = Path("/opt/perpetual")
 TEMPLATE = SRC / "hermes-template"
 CRON_VERSION = (SRC / "CRON_VERSION").read_text().strip()
+INTRO_VERSION = "v5"        # bump to have every client agent re-introduce itself (how it works changed)
 SHARED_SKILLS = DATA / "shared-skills"
 # Private client voice packs copied onto the server (scripts/build_voice_import.py); never in git.
 IMPORTS = DATA / "imports"
@@ -179,6 +181,28 @@ def skill_args(*skills):
 
 # ---------------------------------------------------------------- main
 
+def tavily_key():
+    """Web research key: from TAVILY_API_KEYS (comma-separated, several free accounts) pick the one
+    with the most searches left this month; TAVILY_API_KEY alone also works."""
+    keys = [k.strip() for k in (env("TAVILY_API_KEYS") or "").split(",") if k.strip()]
+    if env("TAVILY_API_KEY") and env("TAVILY_API_KEY") not in keys:
+        keys.append(env("TAVILY_API_KEY"))
+    best, best_left = (keys[0] if keys else None), -1
+    for key in keys:
+        try:
+            req = urllib.request.Request("https://api.tavily.com/usage", headers={"Authorization": f"Bearer {key}"})
+            with urllib.request.urlopen(req, timeout=15) as r:
+                acct = json.loads(r.read()).get("account") or {}
+            left = (acct.get("plan_limit") or 0) - (acct.get("plan_usage") or 0)
+        except Exception:  # noqa: BLE001 — an unreachable or revoked key just isn't picked
+            continue
+        if left > best_left:
+            best, best_left = key, left
+    if keys:
+        log(f"web research: {len(keys)} Tavily key(s), using one with {max(best_left, 0)} searches left")
+    return best
+
+
 def main(runtime=False):
     shared = {
         "ANTHROPIC_API_KEY": env("ANTHROPIC_API_KEY", required=True),
@@ -194,6 +218,7 @@ def main(runtime=False):
         "OWNER_SLACK_IDS": env("OWNER_SLACK_IDS"),
         # Small server: run scheduled jobs one at a time instead of piling them into memory.
         "HERMES_CRON_MAX_PARALLEL": env("HERMES_CRON_MAX_PARALLEL", "1"),
+        "TAVILY_API_KEY": tavily_key(),
     }
     model = env("PX_MODEL", "claude-sonnet-5-5")
     learn_model = env("PX_LEARN_MODEL", "claude-opus-5-5")
@@ -284,7 +309,6 @@ def main(runtime=False):
         brief.mkdir(parents=True, exist_ok=True)
         (brief / "SKILL.md").write_text(client_brief(c, handle, name))
         write_script(home, "px_requests.py", ["requests-pending", handle])
-        write_script(home, "px_console.py", ["console-replies", handle])
         # PX_SLACK_TOKEN, not SLACK_BOT_TOKEN: a profile holding SLACK_BOT_TOKEN would start its own
         # Slack connection for the same app (Hermes refuses duplicate credentials).
         write_env(home, {**shared, "CLIENT_HANDLE": handle, "PX_SLACK_TOKEN": env("SLACK_BOT_TOKEN")})
@@ -293,6 +317,8 @@ def main(runtime=False):
             "model.provider": "anthropic", "model.default": model, "timezone": tz,
             "approvals.mode": "manual", "memory.memory_enabled": True,
             "plugins.enabled": ["perpetual"], "skills.external_dirs": [str(SHARED_SKILLS)],
+            # One client, thought about deeply: high reasoning, and the web through Tavily.
+            "agent.reasoning_effort": "high", "web.backend": "tavily",
         })
         deliver = f"slack:{channel}"
         routes.append({"name": f"x-{slug}", "platform": "slack", "chat_id": str(channel), "profile": slug})
@@ -303,17 +329,24 @@ def main(runtime=False):
         voice = skills_dir / "client-voice" / "SKILL.md"
         intro_marker = home / ".perpetual-intro"
         voice_ready = "version: 0.0.0" not in voice.read_text()
-        introduced_here = intro_marker.exists() and intro_marker.read_text().strip() == channel
+        intro_key = f"{channel}:{INTRO_VERSION}"
+        introduced_here = intro_marker.exists() and intro_marker.read_text().strip() == intro_key
         if voice_ready and not introduced_here:
-            # Voice came from an import, so onboarding won't run: introduce the agent in its channel.
+            # Voice came from an import, so onboarding won't run: introduce the agent in its channel
+            # (again whenever the way it works changes).
             hermes("cron", "remove", "px-intro", profile=slug, check=False)
             hermes("cron", "create", "2m",
-                   "You were just given this Slack channel. Post a short hello: who you work for, 3 bullets on "
-                   "their voice from client-voice, what you'll send and when, and how to react to cards "
-                   "(buttons, or ok T1 / edit R2: … / no Q3 reason). Then notify_team: 'live in the channel'.",
+                   "Post a short hello in this channel (plain message, no document): you are the dedicated X "
+                   "strategist for this client only; you answer when asked here (or when Perpetual hands you "
+                   "work) and otherwise send only a daily brief each morning and a weekly report on Mondays; "
+                   "every answer arrives as one document with a short summary, never a pile of cards; you "
+                   "research the client every few days (their numbers, competitors, the niche on the web). "
+                   "Then 4 example asks as bullets: 'replies for my latest article', 'what's working and what "
+                   "isn't this month?', 'how do we grow the profile faster?', 'make this week's package'. "
+                   "End with how to react to drafts: ok R3 / edit R3: … / no R3 reason. Under 12 lines.",
                    "--name", "px-intro", "--deliver", deliver, "--repeat", "1",
                    *skill_args("client-brief", "client-voice"), profile=slug)
-            intro_marker.write_text(channel)
+            intro_marker.write_text(intro_key)
             log(f"@{handle}: introduction scheduled in its channel")
         if "version: 0.0.0" in voice.read_text():
             hermes("cron", "remove", "px-onboarding", profile=slug, check=False)
@@ -358,7 +391,7 @@ def main(runtime=False):
     })
     edit_config(DATA, {
         "model.provider": "anthropic", "model.default": model, "timezone": agency_tz,
-        "approvals.mode": "manual", "plugins.enabled": ["perpetual-hq"],
+        "approvals.mode": "manual", "plugins.enabled": ["perpetual-hq"], "web.backend": "tavily",
         "gateway.multiplex_profiles": True, "gateway.profile_routes": routes,
         # Adding a client restarts the gateway; don't announce restarts in the reports channel.
         "slack.gateway_restart_notification": False,
@@ -464,45 +497,35 @@ def minute_offset(handle):
 
 
 def client_jobs(deliver, learn_model, offset=0):
+    """Client agents work on demand. Unasked, they only: pick up hand-offs from Perpetual (a model-free
+    check every 2 minutes), research their client (silently, 3 nights a week), send one daily brief,
+    a weekly report, and run the weekly learning review (silent)."""
     common = ["--deliver", deliver, "--failure-deliver", deliver]
-    base = ["client-brief", "client-voice", "playbook", "agency-playbook", "content-pipeline"]
+    base = ["client-brief", "client-voice", "playbook", "agency-playbook", "content-pipeline", "doc-templates"]
     if (SHARED_SKILLS / "agency-writing-standards" / "SKILL.md").exists():
         base.append("agency-writing-standards")
     formats = ["x-article", "x-long-tweet", "article-qrt", "video-qrt"]
+    deep = ["--provider", "anthropic", "--model", learn_model, "--reasoning-effort", "high"]
     return [
-        {"name": "px-hunt", "schedule": f"{offset} 8-20/2 * * *",
-         "prompt": "Run a hunt for the client: reply-hunter, then quote-hunter on the same candidate pool, then "
-                   "repost-picks. Send one combined message. If nothing is worth suggesting, reply [SILENT].",
-         "args": common + skill_args(*base, "reply-hunter", "quote-hunter", "repost-picks")},
-        {"name": "px-breakout", "schedule": f"{(offset + 15) % 60},{(offset + 45) % 60} 7-22 * * *",
-         "prompt": "Breakout check: follow breakout-watch. Reply [SILENT] unless a qualifying tweet is found.",
-         "args": common + skill_args("client-brief", "client-voice", "breakout-watch") + ["--reasoning-effort", "low"]},
-        {"name": "px-ideas", "schedule": f"{offset} 8 * * *",
-         "prompt": "Morning tweet ideas: follow tweet-ideas for today's batch.",
-         "args": common + skill_args(*base, "tweet-ideas")},
-        {"name": "px-engage", "schedule": f"{offset} 13 * * *",
-         "prompt": "Engage-back round: follow engage-back.",
-         "args": common + skill_args("client-brief", "client-voice", "engage-back")},
-        {"name": "px-requests", "schedule": "every 15m",
-         "prompt": "New requests from the agency dashboard arrived: follow agency-requests.",
-         "args": common + skill_args(*base, "agency-requests", "weekly-package", *formats, "tweet-ideas")
-                 + ["--monitor-script", "px_requests.py"]},
-        {"name": "px-console-replies", "schedule": f"{offset % 30},{offset % 30 + 30} 8-21 * * *", "prompt": "",
-         "args": ["--deliver", deliver, "--no-agent", "--script", "px_console.py"]},
-        {"name": "px-package", "schedule": f"{offset} 9 * * 1",
-         "prompt": "Produce this week's content package: follow weekly-package end to end.",
-         "args": common + skill_args(*base, "weekly-package", *formats)
-                 + ["--provider", "anthropic", "--model", learn_model]},
-        {"name": "px-recap", "schedule": f"{offset} 21 * * *",
-         "prompt": "Daily recap: follow daily-recap.",
-         "args": common + skill_args("client-brief", "daily-recap")},
+        {"name": "px-requests", "schedule": "every 2m",
+         "prompt": "Work was handed to you (by Perpetual or a teammate's agent): follow agency-requests.",
+         "args": common + skill_args(*base, "agency-requests", "reply-pack", "deep-research", "weekly-package",
+                                     *formats, "tweet-ideas", "reply-hunter", "quote-hunter")
+                 + ["--monitor-script", "px_requests.py", "--reasoning-effort", "high"]},
+        {"name": "px-research", "schedule": f"{offset} 2 * * 1,3,5",
+         "prompt": "Scheduled research run: follow deep-research (save to research_memory, publish nothing), "
+                   "then reply exactly [SILENT].",
+         "args": common + skill_args("client-brief", "client-voice", "playbook", "deep-research") + deep},
+        {"name": "px-brief", "schedule": f"{offset} 9 * * 1-5",
+         "prompt": "Morning: follow daily-brief.",
+         "args": common + skill_args(*base, "daily-brief") + ["--reasoning-effort", "high"]},
         {"name": "px-report", "schedule": f"{offset} 11 * * 1",
          "prompt": "Weekly performance report: follow performance-report.",
-         "args": common + skill_args("client-brief", "playbook", "performance-report")},
+         "args": common + skill_args("client-brief", "playbook", "doc-templates", "performance-report")},
         {"name": "px-learn", "schedule": f"{offset} 22 * * 0",
-         "prompt": "Weekly learning review: follow learning-review and update the playbook and client-voice skills.",
-         "args": common + skill_args(*base, "learning-review")
-                 + ["--provider", "anthropic", "--model", learn_model, "--reasoning-effort", "high"]},
+         "prompt": "Weekly learning review: follow learning-review and update the playbook and client-voice "
+                   "skills. Then reply exactly [SILENT].",
+         "args": common + skill_args(*base, "learning-review") + deep},
     ]
 
 

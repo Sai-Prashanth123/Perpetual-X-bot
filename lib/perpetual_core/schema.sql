@@ -195,3 +195,31 @@ CREATE TABLE IF NOT EXISTS content_history (
     source          TEXT NOT NULL DEFAULT 'perpetual',
     UNIQUE (client, day, format, title)
 );
+
+-- v5: on-demand agents. Hand-offs remember who asked (they get the result link by DM); research
+-- memory holds what each client agent has learned about its client from X data and the web; and
+-- documents published to Slack (canvas or thread) are listed so people can find them again.
+ALTER TABLE agency_requests ADD COLUMN IF NOT EXISTS requester_slack TEXT;
+
+CREATE TABLE IF NOT EXISTS research (
+    id              BIGSERIAL PRIMARY KEY,
+    client          TEXT NOT NULL,
+    at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    kind            TEXT NOT NULL,                   -- performance | competitors | niche | growth | content | note
+    title           TEXT NOT NULL,
+    body            TEXT NOT NULL,
+    sources         JSONB
+);
+CREATE INDEX IF NOT EXISTS research_client_at ON research (client, at DESC);
+
+CREATE TABLE IF NOT EXISTS published_docs (
+    id              BIGSERIAL PRIMARY KEY,
+    client          TEXT NOT NULL,
+    at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    title           TEXT NOT NULL,
+    kind            TEXT,                            -- reply-pack | package | brief | research | report | answer
+    mode            TEXT NOT NULL,                   -- canvas | thread
+    link            TEXT,
+    channel         TEXT,
+    ts              TEXT
+);

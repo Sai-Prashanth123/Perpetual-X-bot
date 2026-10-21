@@ -103,10 +103,19 @@ def agency_playbook_write(conn, p):
     return _ok(written=str(path), version=version)
 
 
-def agency_request(conn, p):
+def delegate_to_client(conn, p):
+    """Hand client work to that client's own agent (its voice, research memory and history live there)."""
     handle = _client_arg(conn, p)
-    rid = agency.add_request(conn, handle, p["request"], by=p.get("by") or "HQ")
-    return _ok(request_id=rid, note="The client's bot picks this up within 15 minutes and answers in its channel.")
+    row = conn.execute("SELECT slack_channel FROM clients WHERE handle = %s", (handle,)).fetchone()
+    if not row or not row["slack_channel"]:
+        raise ValueError(f"@{handle} has no channel yet, so its agent isn't running. "
+                         "Create it first (client_channels), then ask again.")
+    requester = clients._requester()
+    rid = agency.add_request(conn, handle, p["request"], by=p.get("by") or "Perpetual", requester_slack=requester)
+    return _ok(request_id=rid, channel=row["slack_channel"],
+               note=(f"@{handle}'s agent picks this up within ~2 minutes and publishes the result as a document "
+                     f"in <#{row['slack_channel']}>; the requester gets the link by DM. Tell them that in one line; "
+                     "don't attempt the work yourself."))
 
 
 _STR = {"type": "string"}
@@ -139,9 +148,13 @@ HQ_TOOLS = [
      "never copy any client's voice or private details into it.",
      {"body": _STR, "version": _STR, "summary": _STR, "changes": {"type": "array", "items": _STR}},
      ["body", "version"]),
-    ("agency_request", agency_request,
-     "Ask a client's bot to do something in its channel (e.g. 'draft 2 quote options for <url>').",
-     {"client": _STR, "request": _STR, "by": _STR}, ["client", "request"]),
+    ("delegate_to_client", delegate_to_client,
+     "Hand any client-specific work to that client's own agent: replies for their latest article, research "
+     "on what's working, this week's package, ideas, a review of their profile. Write the request exactly as "
+     "the person asked, plus any detail they gave (URLs, angles, deadlines). Result: a document in the "
+     "client's channel and a DM with the link to whoever asked.",
+     {"client": _STR, "request": _STR, "by": {**_STR, "description": "Name of the person asking."}},
+     ["client", "request"]),
 ]
 
 
