@@ -14,11 +14,14 @@ from urllib.parse import urlencode
 
 from .settings import env
 
-PREFIX = {"tweet": "T", "reply": "R", "quote": "Q", "thread": "H", "engage": "E", "repost": "P"}
+PREFIX = {"tweet": "T", "reply": "R", "quote": "Q", "thread": "H", "engage": "E", "repost": "P",
+          "article": "A", "long_tweet": "L", "qrt_promo": "B", "video_qrt": "V"}
 # What the X API lets us post on the client's behalf (Feb 2026 rules): original posts,
 # threads, and replies to people who engaged with the client. Everything else gets an
 # "Open in X" intent link the employee taps.
-API_POSTABLE = {"tweet", "thread", "engage"}
+API_POSTABLE = {"tweet", "thread", "engage", "long_tweet"}
+# X Articles have no API or compose link; promo and video QRTs quote another post / need a clip.
+NO_INTENT = {"article"}
 MATCH_THRESHOLD = 0.62      # text similarity above which a real post counts as "used this suggestion"
 THREAD_BREAK = re.compile(r"\n\s*---\s*\n")
 SCHEMA_FILE = Path(__file__).with_name("schema.sql")
@@ -69,15 +72,23 @@ def thread_parts(text):
 
 def intent_url(kind, text, target_id=None, target_url=None):
     """A prefilled x.com compose link: one tap opens X with the copy ready to post."""
+    if kind in NO_INTENT:
+        return None
     if kind == "repost":
         return f"https://x.com/intent/retweet?{urlencode({'tweet_id': target_id})}" if target_id else None
+    if kind in ("qrt_promo", "video_qrt") and not target_url:
+        return None                       # nothing to quote yet (e.g. the article isn't posted)
     first = thread_parts(text)[0] if kind == "thread" and thread_parts(text) else (text or "")
     params = {"text": first}
     if kind in ("reply", "engage") and target_id:
         params["in_reply_to"] = target_id
-    if kind == "quote" and target_url:
+    if kind in ("quote", "qrt_promo", "video_qrt") and target_url:
         params["url"] = target_url
     return "https://x.com/intent/post?" + urlencode(params)
+
+
+def _json(value):
+    return json.dumps(value) if value not in (None, "", [], {}) else None
 
 
 def _next_code(conn, client, kind):
@@ -126,11 +137,14 @@ def save(conn, client, items, batch=None):
         url = intent_url(kind, text, target_id, it.get("target_url"))
         conn.execute(
             """INSERT INTO suggestions(client, code, kind, text, target_id, target_url, target_text,
-                   target_by, rationale, hook, format, topic, batch, intent_url, api_postable)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                   target_by, rationale, hook, format, topic, batch, intent_url, api_postable,
+                   refs, factcheck, scores, parent_client, parent_code)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
             (client, code, kind, text, target_id, it.get("target_url"),
              (it.get("target_text") or "")[:1000] or None, it.get("target_by"), it.get("rationale"),
-             it.get("hook"), it.get("format"), it.get("topic"), batch, url, kind in API_POSTABLE))
+             it.get("hook"), it.get("format"), it.get("topic"), batch, url, kind in API_POSTABLE,
+             _json(it.get("references")), _json(it.get("factcheck")), _json(it.get("scores")),
+             it.get("parent_client"), (it.get("parent_code") or "").upper() or None))
         if target_id:
             conn.execute(
                 """INSERT INTO seen_targets(client, tweet_id, used_for) VALUES (%s,%s,%s)
@@ -256,7 +270,11 @@ def record_outcomes(conn, client, posts, lookback_days=10):
         if not code:
             best, best_score = None, 0.0
             for c in candidates:
-                score = max(similarity(post.get("text"), c["final_text"] or ""), similarity(post.get("text"), c["text"]))
+                post_text = post.get("text") or ""
+                if post.get("article_title"):     # X Articles: match the title against the draft's first line
+                    post_text = post["article_title"] + " " + post_text
+                score = max(similarity(post_text, c["final_text"] or ""), similarity(post_text, c["text"]),
+                            similarity(post.get("article_title") or "~", ((c["final_text"] or c["text"]) or "").splitlines()[0]))
                 if score > best_score:
                     best, best_score = c, score
             if best and best_score >= MATCH_THRESHOLD:
@@ -356,3 +374,53 @@ def save_document(conn, key, body):
         """INSERT INTO documents(key, body, updated_at) VALUES (%s, %s, now())
            ON CONFLICT (key) DO UPDATE SET body = EXCLUDED.body, updated_at = now()""", (key, body))
     conn.commit()
+
+
+# ---------------------------------------------------------------- articles and their promo QRTs
+
+def link_article_posted(conn, client, code, url):
+    """An article went live: record it and point every promo QRT that quotes it at the live post.
+    Returns [(client, code)] of promo cards whose 'Open in X' link changed."""
+    code = code.strip().upper()
+    m = re.search(r"/status/(\d+)", url or "")
+    tweet_id = m.group(1) if m else None
+    conn.execute(
+        """UPDATE suggestions SET status = 'posted', posted_id = COALESCE(%s, posted_id), target_url = COALESCE(target_url, %s),
+               decided_at = COALESCE(decided_at, now()) WHERE client = %s AND code = %s""",
+        (tweet_id, url, client, code))
+    changed = []
+    for child in conn.execute(
+            "SELECT client, code, kind, text, final_text FROM suggestions WHERE parent_client = %s AND parent_code = %s",
+            (client, code)).fetchall():
+        conn.execute("UPDATE suggestions SET target_url = %s, target_id = %s, intent_url = %s WHERE client = %s AND code = %s",
+                     (url, tweet_id, intent_url(child["kind"], child["final_text"] or child["text"], tweet_id, url),
+                      child["client"], child["code"]))
+        changed.append((child["client"], child["code"]))
+    conn.commit()
+    return changed
+
+
+def add_history(conn, client, entries, source):
+    """Record already-published or drafted pieces so agents don't repeat them (idempotent)."""
+    n = 0
+    for e in entries:
+        if not e.get("title"):
+            continue
+        n += conn.execute(
+            """INSERT INTO content_history(client, day, format, title, topic, status, source)
+               VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""",
+            (client, e.get("day"), e.get("format"), e.get("title")[:300], e.get("topic"), e.get("status"), source)).rowcount
+    conn.commit()
+    return n
+
+
+def recent_content(conn, client, days=45, limit=60):
+    """Titles/hooks this client published or was given in the cooldown window (history + our ledger)."""
+    since = _now() - timedelta(days=days)
+    rows = conn.execute(
+        """SELECT day::text AS day, format, title FROM content_history WHERE client = %s AND (day IS NULL OR day >= %s)
+           UNION ALL
+           SELECT created_at::date::text, kind, left(COALESCE(final_text, text), 160) FROM suggestions
+           WHERE client = %s AND created_at >= %s AND status <> 'rejected' AND kind IN ('article','long_tweet','thread','tweet','video_qrt')
+           ORDER BY 1 DESC NULLS LAST LIMIT %s""", (client, since.date(), client, since, limit)).fetchall()
+    return [dict(r) for r in rows]

@@ -103,6 +103,85 @@ def learning_log(conn, client, p):
     return _ok(logged=True, published=published)
 
 
+def _voice_file(name):
+    path = hermes_home() / "skills" / "perpetual-x" / "client-voice" / "references" / name
+    return path if path.exists() else None
+
+
+def _real_posts(days=90, limit=60):
+    data = json.loads(console.x_client_content({"days": days, "limit": limit}))
+    return [p for p in data.get("posts", []) if not p.get("is_reply")] if data.get("success") else []
+
+
+def lint_draft(conn, client, p):
+    from perpetual_core import quality
+    cfg_path = _voice_file("lint-config.json")
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path else None
+    return _ok(**quality.lint(p["text"], cfg))
+
+
+def fact_check(conn, client, p):
+    from perpetual_core import quality
+    receipts = _voice_file("receipts.md")
+    bank = _voice_file("claim-bank.json")
+    res = quality.fact_check(p["text"], receipts.read_text(encoding="utf-8") if receipts else "",
+                             json.loads(bank.read_text(encoding="utf-8")) if bank else None, _real_posts())
+    res["rule"] = ("Remove or [placeholder] every unsourced claim, never ship a do_not_say item, and eyeball "
+                   "'check' names. Pass `references` from this result to suggest_save.")
+    return _ok(**res)
+
+
+def blind_lineup(conn, client, p):
+    from perpetual_core import quality
+    posts = [x["text"] for x in sorted(_real_posts(), key=lambda x: -(x.get("likes") or 0))
+             if len(x.get("text") or "") > 60][:5]
+    if len(posts) < 3:
+        return _ok(**{"pass": True, "skipped": "not enough real posts to compare against"})
+    instructions, body, answer = quality.lineup_prompt(p["text"], posts)
+    ctx = _CTX.get("ctx")
+    if not ctx or not getattr(ctx, "llm", None):
+        return _ok(**{"pass": True, "skipped": "no LLM access for the judge"})
+    res = ctx.llm.complete_structured(instructions=instructions, input=[{"type": "text", "text": body}],
+                                      json_schema=quality.LINEUP_SCHEMA, purpose="perpetual.blind-lineup",
+                                      temperature=0.0, max_tokens=400)
+    return _ok(**quality.lineup_verdict(res.parsed or {}, answer))
+
+
+def content_history(conn, client, p):
+    return _ok(recent=ledger.recent_content(conn, client, days=p.get("days", 45)))
+
+
+def article_posted(conn, client, p):
+    changed = ledger.link_article_posted(conn, client, p["code"], p["url"])
+    for c, code in [(client, p["code"].upper())] + changed:
+        try:
+            slackui.refresh_card(conn, c, code)
+        except Exception:  # noqa: BLE001
+            pass
+    return _ok(article=p["code"].upper(), promo_cards_updated=[f"@{c} {k}" for c, k in changed])
+
+
+def request_article_qrts(conn, client, p):
+    """Ask each same-team teammate (and this client, for a self-QRT) to write a promo QRT."""
+    from perpetual_core import agency
+    code = p["code"].strip().upper()
+    art = ledger.get(conn, client, code)
+    if not art or art["kind"] != "article":
+        raise ValueError(f"{code} isn't an article for @{client}")
+    title = ((art.get("final_text") or art["text"]).strip().splitlines() or [""])[0][:140]
+    mates = agency.teammates(conn, client)
+    asked = []
+    for who in mates + [client]:
+        relation = "your own article (self-QRT)" if who == client else f"your teammate @{client}'s article"
+        agency.add_request(conn, who, (
+            f"Write 1 article-promo QRT (kind qrt_promo) for {relation} {code}: \"{title}\". "
+            f"Follow article-qrt. When saving, set parent_client='{client}' and parent_code='{code}'. "
+            f"Article text: {(art.get('final_text') or art['text'])[:2500]}"), by=client)
+        asked.append(who)
+    return _ok(article=code, requested_from=asked,
+               note="Teammates' agents pick these up within 15 minutes; promo cards land in their channels.")
+
+
 def notify_team(conn, client, p):
     """DM a milestone to whoever added this client (or the owners)."""
     from perpetual_core import notify
@@ -134,7 +213,12 @@ LEDGER_TOOLS = [
          "rationale": {**_STR, "description": "One line: why this should work."},
          "hook": {**_STR, "description": "Hook type, e.g. contrarian, number, story, question, how-to."},
          "format": {**_STR, "description": "e.g. one-liner, list, thread, long-form, quote-take."},
-         "topic": {**_STR, "description": "Short topic label, reused consistently."}},
+         "topic": {**_STR, "description": "Short topic label, reused consistently."},
+         "references": {"type": "array", "items": _STR, "description": "Sources for every claim (from fact_check)."},
+         "factcheck": {"type": "object", "description": "fact_check result summary + claims."},
+         "scores": {"type": "object", "description": "e.g. {anti_ai, hook, voice, algo, lineup}."},
+         "parent_client": {**_STR, "description": "For qrt_promo: whose article it promotes."},
+         "parent_code": {**_STR, "description": "For qrt_promo: the article's code, e.g. A3."}},
          "required": ["kind"]}},
       "batch": {**_STR, "description": "Which job produced these, e.g. reply-hunter."}},
      ["items"]),
@@ -168,6 +252,27 @@ LEDGER_TOOLS = [
      "Record what a learning review changed (summary plus list of changes).",
      {"summary": _STR, "changes": {"type": "array", "items": _STR}},
      ["summary"]),
+    ("lint_draft", lint_draft,
+     "Run the agency's AI-pattern linters on a draft (em dashes, AI-tell words, not-X-but-Y, tricolons, "
+     "rhythm, the client's banned terms). Fix every HARD hit before showing anything.",
+     {"text": _STR, "format": _STR}, ["text"]),
+    ("fact_check", fact_check,
+     "Trace every number and named entity in a draft to the client's receipts, claim bank or real posts. "
+     "Returns verified / unsourced / do_not_say per claim plus the references list for the card.",
+     {"text": _STR}, ["text"]),
+    ("blind_lineup", blind_lineup,
+     "Judge 0: hide the draft among 5 of the client's real top posts and ask an independent judge to spot "
+     "the AI one. pass=false means it reads as AI: rewrite before shipping.",
+     {"text": _STR}, ["text"]),
+    ("content_history", content_history,
+     "What this client already published or was given recently (incl. imported history), to avoid repeats.",
+     {"days": _INT}, []),
+    ("article_posted", article_posted,
+     "Mark an article as live with its x.com URL; every teammate's promo QRT for it gets a working Open in X.",
+     {"code": _STR, "url": _STR}, ["code", "url"]),
+    ("request_article_qrts", request_article_qrts,
+     "After saving an article: ask same-team teammates' agents (and this client, self-QRT) to write promo QRTs.",
+     {"code": _STR}, ["code"]),
     ("notify_team", notify_team,
      "DM a short milestone to the person who added this client (or the agency owners): onboarding done, "
      "this week's package delivered with codes, a problem that needs a human. One or two sentences.",
@@ -193,7 +298,11 @@ def handle_post(raw_args, source=None, **_):
     return xpost.post_and_report(client_handle(), code, by, via="slack")
 
 
+_CTX = {}
+
+
 def register(ctx):
+    _CTX["ctx"] = ctx
     console.register(ctx, toolset="xconsole")
     for name, fn, description, props, required in LEDGER_TOOLS:
         ctx.register_tool(

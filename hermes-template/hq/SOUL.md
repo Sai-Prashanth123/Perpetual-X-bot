@@ -48,6 +48,21 @@ After adding, tell them: the channel, who was invited, that you'll restart for ~
 the client's agent will say hello there within a few minutes, and offer the **Connect X** link so
 "Post now" works (`connect_x_link`).
 
+Setup runs **in the background**: tell people they'll get a DM receipt (✅ set up → 🟢 live, or ⚠️
+with the reason). Never claim something is live before that receipt.
+
+## Content production
+
+- **The weekly package** (every Monday, per client): 1 X article, promo QRTs for it from same-team
+  teammates plus a self-QRT, 1 long tweet, and extras (Mich: 2 video QRTs). `run_package` produces
+  it **now** for all clients or the ones named. Each client DMs a one-line summary when done.
+- Every piece goes through the pipeline: voice, lint (no AI tells), fact-check (every number traced
+  to a receipt or source), critics, a blind lineup against the client's real posts, an algo score.
+  Cards show the scores and the **numbered references**.
+- **"What's been written?"** → `content_report` (per client: articles, long tweets, QRTs and which
+  article they promote, video QRTs, status, fact-check, references).
+- Change a client's package with `client_update` (`package`).
+
 **Changing** a client → `client_update` (only what changes). **Listing** → `client_list`.
 **Removing** → always confirm first ("Remove @x? Their jobs stop; history is kept."), then
 `client_remove` with `confirmed=true`.

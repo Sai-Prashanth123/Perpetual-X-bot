@@ -61,6 +61,10 @@ SHARED = {
     "hook-velocity-patterns.md": "skills/x-algo-scorer/references/hook-velocity-patterns.md",
     "proven-formats-2026.md": "skills/video-qrt-writer/references/proven-formats-2026.md",
     "meme-native-formats.md": "skills/video-qrt-writer/references/meme-native-formats.md",
+    "video-qrt-writer.md": "skills/video-qrt-writer/SKILL.md",
+    "video-qrt-examples.md": "skills/video-qrt-writer/references/examples-and-patterns.md",
+    "x-algo-scorer.md": "skills/x-algo-scorer/SKILL.md",
+    "article-title-audit.md": "skills/article-title-auditor/references/audit-framework.md",
 }
 # Things that must never be copied: credentials sometimes live inside skill text.
 SECRET = re.compile(r"(\b\d{8,10}:[A-Za-z0-9_-]{30,}\b|ntn_[A-Za-z0-9]{20,}|xox[abp]-[A-Za-z0-9-]{10,}|sk-[A-Za-z0-9_-]{20,})")
@@ -122,17 +126,22 @@ def build_client(slug, intel):
         except ValueError:
             pass
     ci = (intel.get("clients") or {}).get(slug) or {}
-    meta = {"handle": handle.lower(), "name": name, "company": company,
+    meta = {"handle": handle.lower(), "name": name, "company": company, "team": team_key(company),
+            "package": PACKAGES.get(slug, DEFAULT_PACKAGE),
             "niche_topics": niche_from(ci.get("vocab") or [], company),
             "watch_accounts": [f"@{s['handle']}" for s in (cfg.get("sentinels") or []) if s.get("handle")][:12],
             "avoid_accounts": [f"@{a}" for a in (ci.get("banned_authors") or [])]}
     if not core:
         # No voice pack: leave the voice unlearned so the client's agent learns it from real posts.
-        return {**meta, "references": 0, "voice": "learn from posts"}
+        return {**meta, "references": 0, "voice": "learn from posts", "history": history(slug)}
     if banned:
         core.append("## Never use\n\n" + "\n".join(f"- {b}" for b in dict.fromkeys(banned)) + "\n")
 
     ref_list = []
+    for fname in ("claim-bank.json", "lint-config.json"):   # machine-readable: fact-check and lint gates
+        text = read(f"data/clients/{slug}/law/{fname}")
+        if text:
+            write(refs / fname, text)
     for fname in ("receipts.md", "content-plan.md", "exemplars.md", "engagement-playbook.md"):
         text = read(f"data/clients/{slug}/law/{fname}")
         if text:
@@ -170,7 +179,38 @@ def build_client(slug, intel):
           f"What works and what doesn't for {name} on X, with evidence. Seeded from the content plan; rewritten weekly by learning-review.",
           "1.0.0", ["perpetual-x", "playbook", "learned"]) + pb)
 
-    return {**meta, "references": len(ref_list), "voice": "imported"}
+    return {**meta, "references": len(ref_list), "voice": "imported", "history": history(slug)}
+
+
+# The weekly package. Everyone gets an article (with teammate QRTs) and a long tweet; Mich also
+# gets two video QRTs. Change any client's later by asking Perpetual.
+PACKAGES = {"michel-lieben": {"article": 1, "long_tweet": 1, "article_qrts": True, "video_qrt": 2}}
+DEFAULT_PACKAGE = {"article": 1, "long_tweet": 1, "article_qrts": True}
+
+
+# Teammates write promo QRTs for each other's articles. Frontal AI is ColdIQ's agency rebrand.
+TEAM_ALIASES = {"frontal": "coldiq"}
+
+
+def team_key(company):
+    first = re.sub(r"[^a-z0-9]", "", (company or "").split(" ")[0].lower().split(".")[0])
+    return TEAM_ALIASES.get(first, first) or None
+
+
+def history(slug):
+    """What the client already published or drafted on X (content-agent's output registry)."""
+    reg = SRC / "data" / "registry" / "output-registry.json"
+    if not reg.exists():
+        return []
+    data = json.loads(reg.read_text(encoding="utf-8"))
+    out = []
+    for e in ((data.get("clients") or {}).get(slug) or {}).get("x", []):
+        title = (e.get("hook") or e.get("title") or "").strip()
+        if not title or "needs Chrome" in title:
+            continue
+        out.append({"day": (e.get("date") or "")[:10] or None, "format": e.get("format"), "title": title[:300],
+                    "topic": e.get("topic"), "status": e.get("status")})
+    return out
 
 
 def build_shared():

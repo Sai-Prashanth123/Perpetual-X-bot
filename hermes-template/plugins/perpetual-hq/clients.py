@@ -6,6 +6,7 @@ employee, create or reuse its public Slack channel, save it in Postgres, run the
 takes effect (routes are read once at gateway start).
 """
 
+import json
 import os
 import re
 import subprocess
@@ -142,6 +143,10 @@ def client_update(conn, p):
     if not current:
         raise ValueError(f"@{handle} isn't a client.")
     fields = {k: p.get(k) for k in ("niche_topics", "watch_accounts", "avoid_accounts", "timezone")}
+    if p.get("package"):
+        pkg = p["package"] if isinstance(p["package"], dict) else json.loads(p["package"])
+        conn.execute("UPDATE clients SET package = %s WHERE handle = %s", (json.dumps(pkg), handle))
+        conn.commit()
     if p.get("name"):
         fields["display_name"] = p["name"]
     if p.get("employee"):
@@ -187,6 +192,48 @@ def client_channels(conn, p):
     return {"done": done, "failed": failed, "setup": setup,
             "next": ("Tell the user the channels exist now and the agents are being set up in the background; "
                      "they'll get a DM when everything is live.")}
+
+
+def run_package(conn, p):
+    """Produce the weekly package now (article + promo QRTs + long tweet + extras) for some or all clients."""
+    wanted = [agency.norm_handle(h) for h in (p.get("clients") or []) if h]
+    targets = [c for c in agency.list_clients(conn) if c["slack_channel"] and (not wanted or c["handle"] in wanted)]
+    skipped = [h for h in wanted if h not in {c["handle"] for c in targets}]
+    who = _requester()
+    for c in targets:
+        agency.add_request(conn, c["handle"], "Produce your weekly content package now: follow weekly-package.",
+                           by=slackui.person_name(who) if who else "Perpetual")
+        if who:
+            conn.execute("UPDATE clients SET added_by = COALESCE(added_by, %s) WHERE handle = %s", (who, c["handle"]))
+    conn.commit()
+    return {"queued": [c["handle"] for c in targets],
+            "skipped_no_channel": skipped or [c["handle"] for c in agency.list_clients(conn) if not c["slack_channel"]][:20],
+            "next": ("Each client's agent starts within 15 minutes, one at a time on this server. Cards land in "
+                     "each client's channel and each client DMs a one-line summary when its package is done.")}
+
+
+def content_report(conn, p):
+    """Everything written: articles, long tweets, QRTs (with the article they promote), video QRTs."""
+    days = int(p.get("days") or 7)
+    kinds = p.get("kinds") or ["article", "long_tweet", "qrt_promo", "video_qrt", "tweet", "thread", "quote"]
+    q = ("""SELECT client, code, kind, status, created_at, decided_by, parent_client, parent_code,
+                   left(COALESCE(final_text, text), 120) AS preview,
+                   jsonb_array_length(COALESCE(refs, '[]'::jsonb)) AS n_refs,
+                   factcheck->>'summary' AS factcheck, scores
+            FROM suggestions WHERE created_at >= now() - make_interval(days => %s) AND kind = ANY(%s)""")
+    args = [days, kinds]
+    if p.get("client"):
+        q += " AND client = %s"
+        args.append(agency.norm_handle(p["client"]))
+    q += " ORDER BY client, created_at DESC LIMIT 200"
+    rows = []
+    for r in conn.execute(q, args):
+        rows.append({"client": r["client"], "code": r["code"], "kind": r["kind"], "status": r["status"],
+                     "when": r["created_at"].date().isoformat(), "by": r["decided_by"],
+                     "promotes": f"@{r['parent_client']} {r['parent_code']}" if r["parent_code"] else None,
+                     "preview": r["preview"], "references": r["n_refs"], "factcheck": r["factcheck"],
+                     "scores": r["scores"]})
+    return {"window_days": days, "count": len(rows), "items": rows}
 
 
 def client_remove(conn, p):
@@ -243,15 +290,26 @@ TOOLS = [
      ["handle", "niche_topics"]),
     ("client_update", client_update,
      "Change a client's settings: niche_topics, watch_accounts, avoid_accounts, timezone, name, "
-     "employee (who runs it) or channel. Only pass what changes.",
+     "employee (who runs it), channel, or package (the weekly content package, e.g. "
+     '{"article":1,"long_tweet":1,"article_qrts":true,"video_qrt":2}). Only pass what changes.',
      {"handle": _S, "employee": _S, "niche_topics": _S, "watch_accounts": _S, "avoid_accounts": _S,
-      "timezone": _S, "name": _S, "channel": _S},
+      "timezone": _S, "name": _S, "channel": _S, "package": {"type": "object"}},
      ["handle"]),
     ("client_channels", client_channels,
      "Give clients their Slack channel. With no handle: create public #x-<handle> for EVERY active client "
      "that has no channel yet (e.g. imported clients). With a handle: that client only, optionally "
      "using an existing `channel` the user names. A client's scheduled work starts once it has a channel.",
      {"handle": _S, "channel": _S}, []),
+    ("run_package", run_package,
+     "Produce the weekly content package NOW: for each client 1 X article (with promo QRTs from same-team "
+     "teammates and a self-QRT), 1 long tweet, plus extras like Mich's 2 video QRTs. Pass `clients` to "
+     "limit it (handles), or omit for every client with a channel. Each piece is fact-checked, "
+     "de-AI'd and delivered as a card with references.",
+     {"clients": {"type": "array", "items": _S}}, []),
+    ("content_report", content_report,
+     "List what's been written: per client, each article, long tweet, QRT (and which article it promotes), "
+     "video QRT, with status, who acted, fact-check summary, number of references and scores.",
+     {"client": _S, "days": {"type": "integer"}, "kinds": {"type": "array", "items": _S}}, []),
     ("client_remove", client_remove,
      "Stop working on a client: their scheduled jobs stop; history, learned voice and playbook are "
      "kept. ALWAYS ask the user to confirm first, then call with confirmed=true.",

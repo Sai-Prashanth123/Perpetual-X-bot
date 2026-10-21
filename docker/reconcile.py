@@ -34,6 +34,9 @@ CRON_VERSION = (SRC / "CRON_VERSION").read_text().strip()
 SHARED_SKILLS = DATA / "shared-skills"
 # Private client voice packs copied onto the server (scripts/build_voice_import.py); never in git.
 IMPORTS = DATA / "imports"
+# Clients without a Slack channel are parked here: their voice, memory and history stay on disk,
+# but Hermes doesn't load them (every live profile costs memory on a small server).
+PARKED = DATA / "profiles-parked"
 LEARNED = {"client-voice", "playbook"}
 PY = "/opt/hermes/.venv/bin/python"
 
@@ -215,11 +218,15 @@ def main(runtime=False):
         added = agency.seed_missing_clients(conn, imported)
         if added:
             log(f"imported {len(added)} new client(s): {', '.join(added)}")
+        history = agency.apply_import_extras(conn, imported)
+        if history:
+            log(f"imported {history} published/drafted pieces into content history")
     if seed and not runtime:
         agency.sync_clients(conn, seed)
     clients = [{"handle": r["handle"], "name": r["display_name"], "slack_channel": r["slack_channel"],
                 "employee": r["employee_slack"], "timezone": r["timezone"], "niche_topics": r["niche_topics"],
-                "watch_accounts": r["watch_accounts"], "avoid_accounts": r["avoid_accounts"]}
+                "watch_accounts": r["watch_accounts"], "avoid_accounts": r["avoid_accounts"],
+                "team": r["company"], "package": r["package"]}
                for r in agency.active_clients(conn)]
     log(f"{len(clients)} active client(s)")
 
@@ -235,6 +242,21 @@ def main(runtime=False):
         slug = profile_slug(handle)
         channel = c.get("slack_channel")
         home = DATA / "profiles" / slug
+        parked = PARKED / slug
+        if not channel:
+            if home.exists():
+                reconcile_cron(home, slug, [], json.dumps([CRON_VERSION, "parked"]))   # stop its jobs first
+                PARKED.mkdir(exist_ok=True)
+                if parked.exists():
+                    shutil.rmtree(parked)
+                shutil.move(str(home), str(parked))
+                log(f"@{handle}: no Slack channel yet — parked (voice and history kept, not loaded)")
+            if not conn.execute("SELECT 1 FROM metrics_daily WHERE client = %s LIMIT 1", (handle,)).fetchone():
+                needs_backfill.append(handle)
+            continue
+        if not home.exists() and parked.exists():
+            shutil.move(str(parked), str(home))
+            log(f"@{handle}: has a channel now — unparked")
         if not home.exists():
             log(f"creating profile {slug} for @{handle}")
             hermes("profile", "create", slug, "--no-alias", "--description", f"X strategist for @{handle}")
@@ -263,15 +285,6 @@ def main(runtime=False):
             "approvals.mode": "manual", "memory.memory_enabled": True,
             "plugins.enabled": ["perpetual"], "skills.external_dirs": [str(SHARED_SKILLS)],
         })
-        if not channel:
-            # No channel yet: keep the client fully set up but idle. Nobody would see the output,
-            # so running its jobs would only spend Claude credits.
-            fp = json.dumps([CRON_VERSION, "no-channel"])
-            if reconcile_cron(home, slug, [], fp):
-                log(f"@{handle}: no Slack channel yet — jobs paused until it has one")
-            if not conn.execute("SELECT 1 FROM metrics_daily WHERE client = %s LIMIT 1", (handle,)).fetchone():
-                needs_backfill.append(handle)
-            continue
         deliver = f"slack:{channel}"
         routes.append({"name": f"x-{slug}", "platform": "slack", "chat_id": str(channel), "profile": slug})
         channels.append(str(channel))
@@ -390,6 +403,16 @@ def run_job(*args, background=False):
         subprocess.run(cmd, env=job_env, check=False)
 
 
+def package_line(pkg):
+    pkg = pkg or {"article": 1, "long_tweet": 1, "article_qrts": True}
+    if isinstance(pkg, str):
+        pkg = json.loads(pkg)
+    parts = [f"{n} {k.replace('_', ' ')}" for k, n in pkg.items() if isinstance(n, int) and not isinstance(n, bool) and n]
+    if pkg.get("article_qrts"):
+        parts.append("promo QRTs from teammates for each article")
+    return ", ".join(parts) + " — every Monday"
+
+
 def client_brief(c, handle, name):
     def show(v, fallback):
         if not v:
@@ -412,6 +435,8 @@ metadata:
 - **Never engage with:** {show(c.get('avoid_accounts'), 'none')}
 - **Timezone:** {c.get('timezone') or 'UTC'}
 - **Goals:** {show(c.get('goals'), 'grow reach and inbound with their ideal audience')}
+- **Team:** {show(c.get('team'), 'solo')} (teammates write promo QRTs for each other's articles)
+- **Weekly package:** {package_line(c.get('package'))}
 
 ## Notes
 {show(c.get('notes'), 'none')}
@@ -431,9 +456,10 @@ def minute_offset(handle):
 
 def client_jobs(deliver, learn_model, offset=0):
     common = ["--deliver", deliver, "--failure-deliver", deliver]
-    base = ["client-brief", "client-voice", "playbook", "agency-playbook"]
+    base = ["client-brief", "client-voice", "playbook", "agency-playbook", "content-pipeline"]
     if (SHARED_SKILLS / "agency-writing-standards" / "SKILL.md").exists():
         base.append("agency-writing-standards")
+    formats = ["x-article", "x-long-tweet", "article-qrt", "video-qrt"]
     return [
         {"name": "px-hunt", "schedule": f"{offset} 8-20/2 * * *",
          "prompt": "Run a hunt for the client: reply-hunter, then quote-hunter on the same candidate pool, then "
@@ -450,12 +476,16 @@ def client_jobs(deliver, learn_model, offset=0):
          "args": common + skill_args("client-brief", "client-voice", "engage-back")},
         {"name": "px-requests", "schedule": "every 15m",
          "prompt": "New requests from the agency dashboard arrived: follow agency-requests.",
-         "args": common + skill_args(*base, "agency-requests", "reply-hunter", "quote-hunter", "tweet-ideas")
+         "args": common + skill_args(*base, "agency-requests", "weekly-package", *formats, "tweet-ideas")
                  + ["--monitor-script", "px_requests.py"]},
+        {"name": "px-package", "schedule": f"{offset} 9 * * 1",
+         "prompt": "Produce this week's content package: follow weekly-package end to end.",
+         "args": common + skill_args(*base, "weekly-package", *formats)
+                 + ["--provider", "anthropic", "--model", learn_model]},
         {"name": "px-recap", "schedule": f"{offset} 21 * * *",
          "prompt": "Daily recap: follow daily-recap.",
          "args": common + skill_args("client-brief", "daily-recap")},
-        {"name": "px-report", "schedule": f"{offset} 9 * * 1",
+        {"name": "px-report", "schedule": f"{offset} 11 * * 1",
          "prompt": "Weekly performance report: follow performance-report.",
          "args": common + skill_args("client-brief", "playbook", "performance-report")},
         {"name": "px-learn", "schedule": f"{offset} 22 * * 0",

@@ -88,9 +88,12 @@ async def on_reject(ack, body, action):
 
 
 async def on_edit_submit(ack, body, view):
-    text = view["state"]["values"]["text"]["v"]["value"] or ""
+    values = view["state"]["values"]
+    parts = [values[k]["v"]["value"] or "" for k in sorted(values, key=lambda k: int(k.split("_")[-1]))
+             if k.startswith("text_")]
+    text = "\n\n".join(x.strip() for x in parts if x.strip())
     if not text.strip():
-        await ack(response_action="errors", errors={"text": "Write the version you want, or press Cancel."})
+        await ack(response_action="errors", errors={"text_0": "Write the version you want, or press Cancel."})
         return
     await ack()
     meta = json.loads(view["private_metadata"])
@@ -102,6 +105,37 @@ async def on_reject_submit(ack, body, view):
     meta = json.loads(view["private_metadata"])
     note = (view["state"]["values"]["note"]["v"]["value"] or "").strip() or None
     await _run(_db, _feedback, meta["c"], meta["k"], "reject", _who(body), note=note)
+
+
+async def on_article_posted(ack, body, action):
+    await ack()
+    v = _value(action)
+    s = await _run(_db, lambda conn: dict(ledger.get(conn, v["c"], v["k"]) or {}))
+    if s:
+        await _run(slackui.slack, "views.open", trigger_id=body["trigger_id"], view=slackui.article_posted_modal(s))
+
+
+def _link_article(conn, client, code, url, who):
+    changed = ledger.link_article_posted(conn, client, code, url)
+    conn.execute("UPDATE suggestions SET decided_by = COALESCE(decided_by, %s) WHERE client = %s AND code = %s",
+                 (who, client, code))
+    conn.commit()
+    for c, k in [(client, code)] + changed:
+        try:
+            slackui.refresh_card(conn, c, k)
+        except Exception:  # noqa: BLE001
+            pass
+    return changed
+
+
+async def on_article_posted_submit(ack, body, view):
+    url = (view["state"]["values"]["url"]["v"]["value"] or "").strip()
+    if "/status/" not in url and "/i/article" not in url:
+        await ack(response_action="errors", errors={"url": "Paste the x.com link of the published article."})
+        return
+    await ack()
+    meta = json.loads(view["private_metadata"])
+    await _run(_db, _link_article, meta["c"], meta["k"], url, _who(body))
 
 
 # ---------------------------------------------------------------- Home tab (dashboard)
@@ -200,7 +234,7 @@ ACTIONS = [
     ("px_open", on_open), ("px_home_1", _window_handler(1)), ("px_home_7", _window_handler(7)),
     ("px_home_28", _window_handler(28)), ("px_home_refresh", _window_handler(7)),
     ("px_draft_for", on_draft_for), ("px_view_playbook", on_view_playbook),
-    ("px_client_details", on_client_details),
+    ("px_client_details", on_client_details), ("px_article_posted", on_article_posted),
 ]
 
 
@@ -223,4 +257,5 @@ def slack_factory(app, adapter):
         listeners.insert(0, listeners.pop())
     app.view("px_edit_submit")(on_edit_submit)
     app.view("px_reject_submit")(on_reject_submit)
+    app.view("px_article_posted_submit")(on_article_posted_submit)
     log.info("Perpetual X: Slack Home tab, modals and %d card actions wired", len(ACTIONS))

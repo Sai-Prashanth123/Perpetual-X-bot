@@ -334,3 +334,29 @@ def seed_missing_clients(conn, entries):
                       timezone=e.get("timezone") or "Asia/Kolkata")
         added.append(handle)
     return added
+
+
+def apply_import_extras(conn, entries):
+    """Fill team (company), weekly package and publishing history from an import. Only empty fields
+    are filled, so anything changed by chat is kept; history inserts are idempotent."""
+    from . import ledger
+    filled = 0
+    for e in entries:
+        handle = norm_handle(e.get("handle"))
+        if not get_client(conn, handle):
+            continue
+        conn.execute("UPDATE clients SET company = COALESCE(company, %s), package = COALESCE(package, %s) WHERE handle = %s",
+                     (e.get("team"), json.dumps(e["package"]) if e.get("package") else None, handle))
+        filled += ledger.add_history(conn, handle, e.get("history") or [], "content-agent")
+    conn.commit()
+    return filled
+
+
+def teammates(conn, handle):
+    """Active clients on the same team (company key), excluding `handle` itself."""
+    row = get_client(conn, handle)
+    if not row or not row["company"]:
+        return []
+    return [r["handle"] for r in conn.execute(
+        "SELECT handle FROM clients WHERE active AND company = %s AND handle <> %s ORDER BY handle",
+        (row["company"], row["handle"]))]

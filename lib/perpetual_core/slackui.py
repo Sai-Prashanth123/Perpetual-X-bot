@@ -14,7 +14,8 @@ from urllib.parse import urlencode
 
 from .settings import env
 
-KIND_LABEL = {"tweet": "Tweet", "thread": "Thread", "reply": "Reply", "quote": "Quote tweet",
+KIND_LABEL = {"article": "X Article", "long_tweet": "Long tweet", "qrt_promo": "Article promo QRT",
+              "video_qrt": "Video QRT", "tweet": "Tweet", "thread": "Thread", "reply": "Reply", "quote": "Quote tweet",
               "repost": "Repost", "engage": "Reply to an engager"}
 STATUS_LABEL = {"pending": "Waiting for review", "approved": "Approved", "edited": "Edited",
                 "rejected": "Rejected", "posted": "Posted", "expired": "Expired (not used in 4 days)"}
@@ -160,7 +161,24 @@ def suggestion_blocks(s, x_connected=False):
         if kind == "thread":
             from .ledger import thread_parts
             copy = "\n\n".join(f"{i}/ {p}" for i, p in enumerate(thread_parts(copy), 1))
-        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": _quote(_esc(copy))}})
+        clip = None
+        if kind == "video_qrt" and "\n---" in copy:
+            copy, clip = [x.strip() for x in copy.split("\n---", 1)]
+        if kind == "article":
+            lines = copy.strip().splitlines()
+            title = lines[0].lstrip("# ").strip() if lines else ""
+            body = "\n".join(lines[1:]).strip()
+            words = len(body.split())
+            more = "…" if len(body) > 600 else ""
+            blocks.append({"type": "section", "text": {"type": "mrkdwn",
+                           "text": f"*{_esc(title)}*\n{_quote(_esc(body[:600]))}{more}"}})
+            blocks.append({"type": "context", "elements": [{"type": "mrkdwn",
+                           "text": f"{words} words · full article in this card's thread"}]})
+        else:
+            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": _quote(_esc(copy))}})
+        if clip:
+            blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": "🎬 " + _esc(clip)[:900]}]})
+    blocks += quality_blocks(s)
     notes = []
     if s.get("rationale"):
         notes.append(_esc(s["rationale"]))
@@ -168,6 +186,11 @@ def suggestion_blocks(s, x_connected=False):
         notes.append("Edited by the team.")
     if s.get("note"):
         notes.append(f"Note: {_esc(s['note'])}")
+    if kind == "qrt_promo":
+        promo = f"Promotes @{s.get('parent_client')} {s.get('parent_code')}" if s.get("parent_code") else "Article promo"
+        if not s.get("intent_url"):
+            promo += " (Open in X appears once the article is posted)"
+        notes.append(promo)
     status = STATUS_LABEL.get(s.get("status"), s.get("status"))
     if s.get("decided_by"):
         status += f" by {_esc(s['decided_by'])}"
@@ -189,6 +212,9 @@ def suggestion_blocks(s, x_connected=False):
     if s.get("intent_url") and s.get("status") not in ("posted", "rejected", "expired"):
         buttons.append({"type": "button", "action_id": "px_open", "url": s["intent_url"], "value": v,
                         "text": {"type": "plain_text", "text": "Open in X"}})
+    if kind == "article" and s.get("status") not in ("posted", "rejected", "expired"):
+        buttons.append({"type": "button", "action_id": "px_article_posted", "value": v,
+                        "text": {"type": "plain_text", "text": "Mark as posted"}})
     if s.get("status") == "pending":
         buttons.append({"type": "button", "action_id": "px_approve", "value": v,
                         "text": {"type": "plain_text", "text": "Approve"},
@@ -196,12 +222,62 @@ def suggestion_blocks(s, x_connected=False):
     if open_status:
         if kind != "repost":
             buttons.append({"type": "button", "action_id": "px_edit", "value": v,
-                            "text": {"type": "plain_text", "text": "Edit"}})
+                            "text": {"type": "plain_text", "text": "Read & edit" if kind == "article" else "Edit"}})
         buttons.append({"type": "button", "action_id": "px_reject", "value": v, "style": "danger",
                         "text": {"type": "plain_text", "text": "Reject"}})
     if buttons:
         blocks.append({"type": "actions", "block_id": f"px_{code}", "elements": buttons[:5]})
     return blocks
+
+
+def _load(v):
+    if isinstance(v, str):
+        try:
+            return json.loads(v)
+        except ValueError:
+            return None
+    return v
+
+
+def quality_blocks(s):
+    """Scores, fact-check result and numbered references, so the team can trust (or challenge) a draft."""
+    scores = _load(s.get("scores")) or {}
+    fc = _load(s.get("factcheck")) or {}
+    refs = _load(s.get("refs")) or []
+    out, bits = [], []
+    labels = {"voice": "Voice", "hook": "Hook", "substance": "Substance", "anti_ai": "Anti-AI",
+              "algo": "Algo", "lineup": "Blind lineup"}
+    for k, label in labels.items():
+        if isinstance(scores, dict) and scores.get(k) not in (None, ""):
+            bits.append(f"{label} {scores[k]}")
+    if isinstance(fc, dict) and fc.get("summary"):
+        bits.append("Fact-check: " + str(fc["summary"]))
+    if bits:
+        out.append({"type": "context", "elements": [{"type": "mrkdwn",
+                    "text": "  ·  ".join(_esc(b) for b in bits)[:2900]}]})
+    if refs:
+        lines = "\n".join(f"[{i}] " + _esc(str(r))[:220] for i, r in enumerate(refs[:8], 1))
+        more = f"\n…and {len(refs) - 8} more" if len(refs) > 8 else ""
+        out.append({"type": "context", "elements": [{"type": "mrkdwn",
+                    "text": ("*References*\n" + lines + more)[:2900]}]})
+    return out
+
+
+def article_sections(text, size=2800):
+    """Split a long text at paragraph boundaries into chunks Slack can show and edit (3,000-char cap)."""
+    chunks, cur = [], ""
+    for para in (text or "").split("\n\n"):
+        if cur and len(cur) + len(para) + 2 > size:
+            chunks.append(cur)
+            cur = para
+        else:
+            cur = f"{cur}\n\n{para}" if cur else para
+        while len(cur) > size:
+            chunks.append(cur[:size])
+            cur = cur[size:]
+    if cur:
+        chunks.append(cur)
+    return chunks or [""]
 
 
 def suggestion_fallback_text(s):
@@ -214,10 +290,34 @@ def edit_modal(s):
             "title": {"type": "plain_text", "text": f"Edit {s['code']}"[:24]},
             "submit": {"type": "plain_text", "text": "Save"},
             "close": {"type": "plain_text", "text": "Cancel"},
-            "blocks": [{"type": "input", "block_id": "text", "label": {"type": "plain_text", "text": "Your version"},
-                        "hint": {"type": "plain_text", "text": "The bot learns from every edit. For threads, separate tweets with a line containing only ---"},
-                        "element": {"type": "plain_text_input", "action_id": "v", "multiline": True,
-                                    "initial_value": (s.get("final_text") or s.get("text") or "")[:3000]}}]}
+            "blocks": edit_inputs(s.get("final_text") or s.get("text") or "")}
+
+
+def edit_inputs(text):
+    parts = article_sections(text)
+    n = len(parts)
+    blocks = []
+    for i, part in enumerate(parts[:90]):
+        block = {"type": "input", "block_id": f"text_{i}",
+                 "label": {"type": "plain_text", "text": "Your version" if n == 1 else f"Part {i + 1} of {n}"},
+                 "element": {"type": "plain_text_input", "action_id": "v", "multiline": True, "initial_value": part}}
+        if i == 0:
+            block["hint"] = {"type": "plain_text",
+                             "text": "The bot learns from every edit. For threads, separate tweets with a line containing only ---"}
+        blocks.append(block)
+    return blocks
+
+
+def article_posted_modal(s):
+    return {"type": "modal", "callback_id": "px_article_posted_submit",
+            "private_metadata": _val(c=s["client"], k=s["code"]),
+            "title": {"type": "plain_text", "text": f"{s['code']} is live"[:24]},
+            "submit": {"type": "plain_text", "text": "Save"},
+            "close": {"type": "plain_text", "text": "Cancel"},
+            "blocks": [{"type": "input", "block_id": "url",
+                        "label": {"type": "plain_text", "text": "Link to the published article on X"},
+                        "hint": {"type": "plain_text", "text": "Teammates' promo QRTs for it get a working Open in X button."},
+                        "element": {"type": "url_text_input", "action_id": "v"}}]}
 
 
 def reject_modal(s):
@@ -413,6 +513,11 @@ def post_cards(conn, client, codes):
                     text=suggestion_fallback_text(s), unfurl_links=False, unfurl_media=False)
         conn.execute("UPDATE suggestions SET slack_channel = %s, slack_ts = %s WHERE client = %s AND code = %s",
                      (res["channel"], res["ts"], client, code))
+        if s["kind"] == "article":        # the full text, copy-ready, in the card's thread
+            parts = article_sections(s["final_text"] or s["text"])
+            for i, part in enumerate(parts, 1):
+                head = f"*{code}, part {i}/{len(parts)}*\n" if len(parts) > 1 else ""
+                slack("chat.postMessage", channel=res["channel"], thread_ts=res["ts"], text=head + part)
         posted += 1
     conn.commit()
     return posted

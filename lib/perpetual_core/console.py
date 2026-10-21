@@ -104,6 +104,8 @@ def compact_tweet(t):
         out["is_quote"] = True
     if t.get("is_long_form"):
         out["long_form"] = True
+    if t.get("article_title"):
+        out["article_title"] = t["article_title"]
     if age is not None:
         out["age_h"] = round(age, 1)
         out["likes_per_h"] = round(likes / age, 1)

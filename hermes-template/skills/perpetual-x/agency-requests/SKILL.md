@@ -11,6 +11,8 @@ metadata:
 
 1. `agency_requests_take` — returns each pending request once.
 2. Handle every request the way you would if the employee had typed it in this channel (a pasted URL →
-   replies + quotes, a topic → tweet ideas, etc.), with all the usual rules: save first, codes, links.
+   replies + quotes, a topic → tweet ideas, "produce your weekly package" → `weekly-package`,
+   "write a promo QRT for … article A3" → `article-qrt` with the parent fields), always through
+   `content-pipeline`.
 3. Start the message with who asked: "Requested by <name> from the dashboard:".
 4. No requests → `[SILENT]`.
