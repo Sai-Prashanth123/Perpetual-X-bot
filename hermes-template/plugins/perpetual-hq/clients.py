@@ -6,6 +6,7 @@ employee, create or reuse its public Slack channel, save it in Postgres, run the
 takes effect (routes are read once at gateway start).
 """
 
+import os
 import re
 import subprocess
 
@@ -81,16 +82,17 @@ def _invite(channel_id, user_ids):
     return []
 
 
-def apply_changes():
-    """Run the reconciler now and restart the gateway shortly after, so the reply goes out first."""
-    r = subprocess.run(RECONCILE, capture_output=True, text=True, timeout=900)
-    if r.returncode != 0:
-        raise RuntimeError("setup failed: " + (r.stderr or r.stdout)[-600:])
-    # Channel routes are read once when the gateway starts. Restart it in the background,
-    # after this turn has had time to reply.
-    subprocess.Popen(["sh", "-c", "sleep 20; hermes gateway restart >/tmp/px-restart.log 2>&1"],
-                     start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return r.stdout.strip().splitlines()[-1] if r.stdout.strip() else ""
+def apply_changes(summary):
+    """Apply client changes in the background and DM the requester the outcome.
+
+    The reconciler can take minutes on a small server (it registers each client's schedule), so it
+    never runs inside the chat turn: a detached job runs it, DMs "✅ set up", restarts the gateway
+    (channel routes are read at start) and DMs "🟢 back" once Perpetual is live again."""
+    subprocess.Popen(
+        ["/opt/hermes/.venv/bin/python", "-m", "perpetual_core.jobs", "apply-changes", _requester() or "", summary],
+        env={**os.environ, "PYTHONPATH": "/opt/perpetual/pylib"},
+        start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return "setting up in the background; I'll DM you when it's live"
 
 
 def client_add(conn, p):
@@ -120,13 +122,16 @@ def client_add(conn, p):
                          watch_accounts=p.get("watch_accounts"), avoid_accounts=p.get("avoid_accounts"),
                          timezone=p.get("timezone") or DEFAULT_TZ, slack_channel=channel_id,
                          employee_slack=employee and employee["id"])
-    setup = apply_changes()
+    if _requester():
+        conn.execute("UPDATE clients SET added_by = COALESCE(added_by, %s) WHERE handle = %s", (_requester(), handle))
+        conn.commit()
+    setup = apply_changes(f"@{handle} in #{channel_name}")
     return {
         "client": handle, "x_name": x_name, "channel": f"<#{channel_id}>", "channel_created": created,
         "employee": (employee["real_name"] or employee["name"]) if employee else "the whole team", "console": console_status, "setup": setup,
         "connect_x_link": slackui.connect_link(handle),
-        "next": ("I'm restarting in ~20 seconds to switch the channel on. Within a few minutes the client's "
-                 "agent studies their posts, learns the voice, and says hello in the channel."),
+        "next": ("Tell the user it's being set up in the background and that they'll get a DM when it's "
+                 "live (about a minute, then a ~20 second restart). The client's agent then says hello in the channel."),
         "notes": notes,
     }
 
@@ -150,7 +155,7 @@ def client_update(conn, p):
         channel_id, _, _ = _resolve_channel(p["channel"], handle)
         fields["slack_channel"] = channel_id
     agency.upsert_client(conn, handle, **fields)
-    setup = apply_changes()
+    setup = apply_changes(f"the update to @{handle}")
     return {"client": handle, "updated": [k for k, v in fields.items() if v is not None], "setup": setup}
 
 
@@ -171,12 +176,17 @@ def client_channels(conn, p):
             channel_id, name, created = _resolve_channel(p.get("channel") if p.get("handle") else None, c["handle"])
             _invite(channel_id, [c["employee_slack"], _requester()])
             agency.upsert_client(conn, c["handle"], slack_channel=channel_id)
+            if _requester():
+                conn.execute("UPDATE clients SET added_by = COALESCE(added_by, %s) WHERE handle = %s",
+                             (_requester(), c["handle"]))
+                conn.commit()
             done.append({"client": c["handle"], "channel": f"<#{channel_id}>", "created": created})
         except Exception as e:  # noqa: BLE001 — report per client, keep going
             failed.append({"client": c["handle"], "error": str(e)})
-    setup = apply_changes() if done else ""
+    setup = apply_changes(f"{len(done)} new channel(s)") if done else ""
     return {"done": done, "failed": failed, "setup": setup,
-            "next": "Restarting in ~20 seconds. Each client's agent then starts its schedule in its channel."}
+            "next": ("Tell the user the channels exist now and the agents are being set up in the background; "
+                     "they'll get a DM when everything is live.")}
 
 
 def client_remove(conn, p):
@@ -185,7 +195,7 @@ def client_remove(conn, p):
         raise ValueError(f"Ask the user to confirm removing @{handle} first, then call again with confirmed=true.")
     if not agency.set_client_active(conn, handle, False):
         raise ValueError(f"@{handle} isn't a client.")
-    setup = apply_changes()
+    setup = apply_changes(f"removing @{handle}")
     return {"client": handle, "removed": True, "kept": "history, learned voice and playbook (re-adding restores them)",
             "channel": "left as is", "setup": setup}
 

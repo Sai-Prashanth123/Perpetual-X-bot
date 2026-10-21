@@ -33,7 +33,7 @@ From their history: top posts and what they share, formats by average likes, bes
 that win — each with evidence and n. Mark thin evidence `(hypothesis)`. Version 1.0.0.
 
 ## Introduce yourself
-`learning_log` "onboarding complete". Then send a short intro: what you learned about their voice
+`learning_log` "onboarding complete", then `notify_team` with one line ("Onboarded: voice learned from N posts, intro posted in the channel"). Then send a short intro: what you learned about their voice
 (3 bullets); what you'll send and when (hunts every 2h during the day, breakout alerts, ideas at
 8:00, engage-back at 13:00, recap at 21:00, report on Monday, learning review on Sunday); and how
 to give feedback (`ok T1`, `edit R2: …`, `no Q3 reason`).

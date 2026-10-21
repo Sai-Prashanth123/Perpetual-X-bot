@@ -28,13 +28,15 @@ def _now():
     return datetime.now(timezone.utc)
 
 
-def connect():
+def connect(autocommit=False):
     import psycopg
     from psycopg.rows import dict_row
     url = env("DATABASE_URL")
     if not url:
         raise RuntimeError("DATABASE_URL is not set")
-    return psycopg.connect(url, row_factory=dict_row, autocommit=False, **_ipv4_hostaddr(url))
+    # Long-running callers (the reconciler) pass autocommit=True: a read left open while slow work
+    # runs would sit idle-in-transaction, and hosted Postgres (Neon) kills those after 5 minutes.
+    return psycopg.connect(url, row_factory=dict_row, autocommit=autocommit, **_ipv4_hostaddr(url))
 
 
 def _ipv4_hostaddr(url):

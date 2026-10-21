@@ -103,6 +103,13 @@ def learning_log(conn, client, p):
     return _ok(logged=True, published=published)
 
 
+def notify_team(conn, client, p):
+    """DM a milestone to whoever added this client (or the owners)."""
+    from perpetual_core import notify
+    sent = notify.dm(notify.client_watchers(conn, client), f"@{client}: {p['text']}")
+    return _ok(sent_to=sent)
+
+
 def agency_requests_take(conn, client, p):
     from perpetual_core import agency
     return _ok(requests=agency.take_requests(conn, client))
@@ -161,6 +168,11 @@ LEDGER_TOOLS = [
      "Record what a learning review changed (summary plus list of changes).",
      {"summary": _STR, "changes": {"type": "array", "items": _STR}},
      ["summary"]),
+    ("notify_team", notify_team,
+     "DM a short milestone to the person who added this client (or the agency owners): onboarding done, "
+     "this week's package delivered with codes, a problem that needs a human. One or two sentences.",
+     {"text": _STR},
+     ["text"]),
     ("agency_requests_take", agency_requests_take,
      "Take this client's pending requests from the agency dashboard (e.g. 'draft a quote for <url>'). "
      "Each request is returned once; handle every one.",

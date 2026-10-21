@@ -188,6 +188,9 @@ def main(runtime=False):
         "TOKEN_ENCRYPTION_KEY": env("TOKEN_ENCRYPTION_KEY"),
         "X_CLIENT_ID": env("X_CLIENT_ID"),
         "X_CLIENT_SECRET": env("X_CLIENT_SECRET"),
+        "OWNER_SLACK_IDS": env("OWNER_SLACK_IDS"),
+        # Small server: run scheduled jobs one at a time instead of piling them into memory.
+        "HERMES_CRON_MAX_PARALLEL": env("HERMES_CRON_MAX_PARALLEL", "1"),
     }
     model = env("PX_MODEL", "claude-sonnet-5-5")
     learn_model = env("PX_LEARN_MODEL", "claude-opus-5-5")
@@ -200,7 +203,9 @@ def main(runtime=False):
 
     # Scripts run outside any profile scope; give them the shared settings.
     shared_env = DATA / "perpetual-shared.env"
-    shared_env.write_text("".join(f"{k}={shared[k]}\n" for k in ("DATABASE_URL", "XCONSOLE_API_KEY", "XCONSOLE_URL")))
+    script_env = {k: shared.get(k) for k in ("DATABASE_URL", "XCONSOLE_API_KEY", "XCONSOLE_URL", "OWNER_SLACK_IDS")}
+    script_env["SLACK_BOT_TOKEN"] = env("SLACK_BOT_TOKEN")      # jobs that DM receipts
+    shared_env.write_text("".join(f"{k}={v}\n" for k, v in script_env.items() if v))
     shared_env.chmod(0o600)
 
     conn = connect_with_retry()
@@ -271,9 +276,23 @@ def main(runtime=False):
         routes.append({"name": f"x-{slug}", "platform": "slack", "chat_id": str(channel), "profile": slug})
         channels.append(str(channel))
         fp = json.dumps([CRON_VERSION, deliver, model, learn_model, tz, client_jobs_skills()])
-        if reconcile_cron(home, slug, client_jobs(deliver, learn_model), fp):
+        if reconcile_cron(home, slug, client_jobs(deliver, learn_model, offset=minute_offset(handle)), fp):
             log(f"registered cron jobs for @{handle} → {deliver}")
         voice = skills_dir / "client-voice" / "SKILL.md"
+        intro_marker = home / ".perpetual-intro"
+        voice_ready = "version: 0.0.0" not in voice.read_text()
+        introduced_here = intro_marker.exists() and intro_marker.read_text().strip() == channel
+        if voice_ready and not introduced_here:
+            # Voice came from an import, so onboarding won't run: introduce the agent in its channel.
+            hermes("cron", "remove", "px-intro", profile=slug, check=False)
+            hermes("cron", "create", "2m",
+                   "You were just given this Slack channel. Post a short hello: who you work for, 3 bullets on "
+                   "their voice from client-voice, what you'll send and when, and how to react to cards "
+                   "(buttons, or ok T1 / edit R2: … / no Q3 reason). Then notify_team: 'live in the channel'.",
+                   "--name", "px-intro", "--deliver", deliver, "--repeat", "1",
+                   *skill_args("client-brief", "client-voice"), profile=slug)
+            intro_marker.write_text(channel)
+            log(f"@{handle}: introduction scheduled in its channel")
         if "version: 0.0.0" in voice.read_text():
             hermes("cron", "remove", "px-onboarding", profile=slug, check=False)
             hermes("cron", "create", "2m", "Onboard this client: follow client-onboarding end to end.",
@@ -353,7 +372,7 @@ def connect_with_retry(attempts=8):
     import time
     for i in range(1, attempts + 1):
         try:
-            return ledger.connect()
+            return ledger.connect(autocommit=True)
         except Exception as e:  # noqa: BLE001
             if i == attempts:
                 raise
@@ -404,36 +423,42 @@ def client_jobs_skills():
     return (SHARED_SKILLS / "agency-writing-standards" / "SKILL.md").exists()
 
 
-def client_jobs(deliver, learn_model):
+def minute_offset(handle):
+    """A stable per-client minute (0-49) so fifteen clients don't all fire at :00 on a 1 GB server."""
+    import zlib
+    return zlib.crc32(handle.encode()) % 50
+
+
+def client_jobs(deliver, learn_model, offset=0):
     common = ["--deliver", deliver, "--failure-deliver", deliver]
     base = ["client-brief", "client-voice", "playbook", "agency-playbook"]
     if (SHARED_SKILLS / "agency-writing-standards" / "SKILL.md").exists():
         base.append("agency-writing-standards")
     return [
-        {"name": "px-hunt", "schedule": "0 8-20/2 * * *",
+        {"name": "px-hunt", "schedule": f"{offset} 8-20/2 * * *",
          "prompt": "Run a hunt for the client: reply-hunter, then quote-hunter on the same candidate pool, then "
                    "repost-picks. Send one combined message. If nothing is worth suggesting, reply [SILENT].",
          "args": common + skill_args(*base, "reply-hunter", "quote-hunter", "repost-picks")},
-        {"name": "px-breakout", "schedule": "15,45 7-22 * * *",
+        {"name": "px-breakout", "schedule": f"{(offset + 15) % 60},{(offset + 45) % 60} 7-22 * * *",
          "prompt": "Breakout check: follow breakout-watch. Reply [SILENT] unless a qualifying tweet is found.",
          "args": common + skill_args("client-brief", "client-voice", "breakout-watch") + ["--reasoning-effort", "low"]},
-        {"name": "px-ideas", "schedule": "0 8 * * *",
+        {"name": "px-ideas", "schedule": f"{offset} 8 * * *",
          "prompt": "Morning tweet ideas: follow tweet-ideas for today's batch.",
          "args": common + skill_args(*base, "tweet-ideas")},
-        {"name": "px-engage", "schedule": "0 13 * * *",
+        {"name": "px-engage", "schedule": f"{offset} 13 * * *",
          "prompt": "Engage-back round: follow engage-back.",
          "args": common + skill_args("client-brief", "client-voice", "engage-back")},
         {"name": "px-requests", "schedule": "every 15m",
          "prompt": "New requests from the agency dashboard arrived: follow agency-requests.",
          "args": common + skill_args(*base, "agency-requests", "reply-hunter", "quote-hunter", "tweet-ideas")
                  + ["--monitor-script", "px_requests.py"]},
-        {"name": "px-recap", "schedule": "0 21 * * *",
+        {"name": "px-recap", "schedule": f"{offset} 21 * * *",
          "prompt": "Daily recap: follow daily-recap.",
          "args": common + skill_args("client-brief", "daily-recap")},
-        {"name": "px-report", "schedule": "0 9 * * 1",
+        {"name": "px-report", "schedule": f"{offset} 9 * * 1",
          "prompt": "Weekly performance report: follow performance-report.",
          "args": common + skill_args("client-brief", "playbook", "performance-report")},
-        {"name": "px-learn", "schedule": "0 22 * * 0",
+        {"name": "px-learn", "schedule": f"{offset} 22 * * 0",
          "prompt": "Weekly learning review: follow learning-review and update the playbook and client-voice skills.",
          "args": common + skill_args(*base, "learning-review")
                  + ["--provider", "anthropic", "--model", learn_model, "--reasoning-effort", "high"]},

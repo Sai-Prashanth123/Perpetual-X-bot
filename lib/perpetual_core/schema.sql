@@ -170,3 +170,28 @@ CREATE TABLE IF NOT EXISTS documents (           -- latest text of learned skill
 -- v3: each suggestion is an interactive Slack card; remember where it lives so it can be updated.
 ALTER TABLE suggestions ADD COLUMN IF NOT EXISTS slack_channel TEXT;
 ALTER TABLE suggestions ADD COLUMN IF NOT EXISTS slack_ts TEXT;
+
+-- v4: who added a client (DM receipts and milestones go to them), company for teammate QRTs,
+-- the weekly content package, and richer suggestions (references, fact-check, scores, parent).
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS added_by TEXT;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS company TEXT;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS package JSONB;
+ALTER TABLE suggestions ADD COLUMN IF NOT EXISTS refs JSONB;
+ALTER TABLE suggestions ADD COLUMN IF NOT EXISTS factcheck JSONB;
+ALTER TABLE suggestions ADD COLUMN IF NOT EXISTS scores JSONB;
+ALTER TABLE suggestions ADD COLUMN IF NOT EXISTS parent_code TEXT;
+ALTER TABLE suggestions ADD COLUMN IF NOT EXISTS parent_client TEXT;
+
+-- What a client has already published or drafted (imported from content-agent, plus our own),
+-- so agents never repeat a topic inside the cooldown.
+CREATE TABLE IF NOT EXISTS content_history (
+    id              BIGSERIAL PRIMARY KEY,
+    client          TEXT NOT NULL,
+    day             DATE,
+    format          TEXT,
+    title           TEXT,
+    topic           TEXT,
+    status          TEXT,
+    source          TEXT NOT NULL DEFAULT 'perpetual',
+    UNIQUE (client, day, format, title)
+);
