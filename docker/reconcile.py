@@ -298,6 +298,8 @@ def main(runtime=False):
         "model.provider": "anthropic", "model.default": model, "timezone": agency_tz,
         "approvals.mode": "manual", "plugins.enabled": ["perpetual-hq"],
         "gateway.multiplex_profiles": True, "gateway.profile_routes": routes,
+        # Adding a client restarts the gateway; don't announce restarts in the reports channel.
+        "slack.gateway_restart_notification": False,
     })
     hq_deliver = f"slack:{hq_channel}" if hq_channel else "local"
     fp = json.dumps([CRON_VERSION, hq_deliver, model, learn_model, agency_tz])
