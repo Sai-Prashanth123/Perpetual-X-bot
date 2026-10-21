@@ -362,7 +362,7 @@ def teammates(conn, handle):
         (row["company"], row["handle"]))]
 
 
-def import_console_replies(conn, client):
+def import_console_replies(conn, client, per_run=5):
     """Bring the console reply agent's pending drafts into the client's channel as reply cards.
     One card per target tweet: the first safe option is the draft, the others go in the card's notes.
     Targets already handled (by us or an earlier import) are skipped. Returns the new codes."""
@@ -373,7 +373,7 @@ def import_console_replies(conn, client):
         return []
     console_name = roster[client]
     items = []
-    for d in console.reply_drafts(console_name):
+    for d in console.reply_drafts(console_name, limit=20)[:per_run]:
         src = d.get("source") or {}
         tid = src.get("tweet_id")
         options = [o for o in d.get("options") or [] if o.get("safe", True) and o.get("text")]
