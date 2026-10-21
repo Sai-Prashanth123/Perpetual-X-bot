@@ -201,8 +201,9 @@ def publish_document(conn, client, p):
     res = slackui.publish_doc(conn, client, p["title"], p["markdown"], p["summary"],
                               kind=p.get("kind") or "answer", asked_by=p.get("asked_by_slack"))
     dm_to = [u for u in (p.get("dm_to") or []) if u]
-    if dm_to and res.get("link"):
-        notify.dm(dm_to, f"✅ @{client}: *{p['title']}* is ready → {res['link']}\n{p['summary'][:300]}")
+    if dm_to:
+        where = res.get("link") or f"<#{res['channel']}>"
+        notify.dm(dm_to, f"✅ @{client}: *{p['title']}* is ready → {where}\n{p['summary'][:300]}")
     note = ("Published. Do NOT repeat the document in your reply: reply with one short line at most "
             "(or nothing, in a scheduled job, the summary message is already in the channel).")
     return _ok(**res, dm_sent_to=dm_to, instructions=note)

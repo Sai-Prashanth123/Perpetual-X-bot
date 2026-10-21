@@ -28,16 +28,23 @@ class SlackError(RuntimeError):
     pass
 
 
+FORM_METHODS = {"chat.getPermalink", "conversations.replies", "conversations.history", "conversations.info",
+                "users.info", "files.info"}
+
+
 def slack(method, **payload):
     # Client profiles get the token as PX_SLACK_TOKEN: a SLACK_BOT_TOKEN in their .env would make Hermes
     # start a second Slack connection for the same app (a duplicate-credential error).
     token = env("SLACK_BOT_TOKEN") or env("PX_SLACK_TOKEN")
     if not token:
         raise SlackError("no Slack bot token configured")
-    req = urllib.request.Request(
-        f"https://slack.com/api/{method}", method="POST",
-        data=json.dumps({k: v for k, v in payload.items() if v is not None}).encode(),
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"})
+    payload = {k: v for k, v in payload.items() if v is not None}
+    if method in FORM_METHODS:   # read methods that reject a JSON body ("invalid_arguments")
+        data, ctype = urlencode(payload).encode(), "application/x-www-form-urlencoded"
+    else:
+        data, ctype = json.dumps(payload).encode(), "application/json; charset=utf-8"
+    req = urllib.request.Request(f"https://slack.com/api/{method}", method="POST", data=data,
+                                 headers={"Authorization": f"Bearer {token}", "Content-Type": ctype})
     with urllib.request.urlopen(req, timeout=30) as r:
         data = json.loads(r.read())
     if not data.get("ok"):
