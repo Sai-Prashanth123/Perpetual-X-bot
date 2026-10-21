@@ -1,6 +1,6 @@
 ---
 name: agency-report
-description: "Weekly agency report for #hq: every account's growth vs last week and vs the agency average, what worked across clients, competitor context, team performance, and next week's priorities."
+description: "Weekly agency report for the Main X agent channel: every account's growth vs last week and vs the agency average, what worked across clients, competitor context, team performance, and next week's priorities."
 version: 1.0.0
 metadata:
   hermes:

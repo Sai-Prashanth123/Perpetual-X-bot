@@ -1,6 +1,6 @@
 ---
 name: agency-digest
-description: "Daily agency digest for #hq: leaderboard movers, clients needing attention, what's viral in each niche, and employee follow-through."
+description: "Daily agency digest for the Main X agent channel: leaderboard movers, clients needing attention, what's viral in each niche, and employee follow-through."
 version: 1.0.0
 metadata:
   hermes:

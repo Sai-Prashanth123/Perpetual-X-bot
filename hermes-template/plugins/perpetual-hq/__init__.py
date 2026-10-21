@@ -18,7 +18,7 @@ from perpetual_core.settings import hermes_home, profile_slug  # noqa: E402
 
 AGENCY_PLAYBOOK_HEADER = """---
 name: agency-playbook
-description: "Cross-client patterns that work on X for this agency's clients — hooks, formats, timing, reply targets — with evidence. Shared read-only with every client bot. Written by the HQ agent; never contains any client's voice."
+description: "Cross-client patterns that work on X for this agency's clients — hooks, formats, timing, reply targets — with evidence. Shared read-only with every client bot. Written by the Main X agent; never contains any client's voice."
 version: {version}
 metadata:
   hermes:

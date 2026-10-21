@@ -8,7 +8,7 @@ An always-on X (Twitter) strategist for every client of the agency, built on
   people who engaged, and reports what works.
 - **Approved posts go out with one tap.** `/post T3` in Slack, or **Post now** on the dashboard.
 - **The owner sees everything:** a web dashboard (leaderboard, growth, viral feed, competitors,
-  team, learning) and an `#hq` channel with a daily digest and weekly report.
+  team, learning) and a **Main X agent** channel with a daily digest and weekly report.
 - **It learns:** every approval, edit, rejection and real result feeds each client's playbook
   every week. Patterns that hold across clients go into a shared agency playbook. Each client's
   voice stays its own.
@@ -18,7 +18,7 @@ An always-on X (Twitter) strategist for every client of the agency, built on
 ```
 Render
 ├─ agency-bot   ONE Hermes container, multiplexed gateway, ONE Slack app
-│    ├─ default profile = HQ agent            → #hq
+│    ├─ default profile = Main X agent      → #main-x-agent
 │    └─ one profile per client in clients.yaml → its own channel (gateway.profile_routes)
 ├─ agency-web   FastAPI dashboard · X account connections · /internal/post
 └─ agency-db    Postgres: suggestions, feedback, outcomes, daily metrics, viral feed, tokens
@@ -32,7 +32,7 @@ Render
 | `hermes-template/plugins/perpetual-hq/` | HQ tools: scorecards, team, viral feed, agency playbook. |
 | `hermes-template/skills/perpetual-x/` | One skill per client job, plus the learned `client-voice` and `playbook`. |
 | `hermes-template/hq/` | HQ persona and skills (digest, report, agency learning). |
-| `docker/reconcile.py` | Runs on every boot. Builds profiles, routes, schedules and the HQ from `clients.yaml`. |
+| `docker/reconcile.py` | Runs on every boot. Builds profiles, routes, schedules and the Main X agent from `clients.yaml`. |
 | `web/` | The dashboard. |
 | `slack-app-manifest.json` | The one Slack app. Paste it at api.slack.com/apps. |
 | `render.yaml` | Bot + web + Postgres. |
@@ -52,7 +52,7 @@ Only a person can post. The model has no posting tool.
 
 ## The schedule
 
-| When | Client channel | #hq |
+| When | Client channel | Main X agent channel |
 |---|---|---|
 | First boot | Learns the voice from 90 days of posts and says hello | Backfills 4 weeks of numbers |
 | Every 2 h, 08–20 | Reply, quote and repost hunt | — |
@@ -66,7 +66,7 @@ Only a person can post. The model has no posting tool.
 | Mon | Weekly report (09:00) | Agency report (10:00) |
 | Sun | Learning review (22:00) | Agency learning (23:30) |
 
-Each client's times are in the client's timezone; HQ uses `AGENCY_TIMEZONE`.
+Each client's times are in the client's timezone; the Main X agent uses `AGENCY_TIMEZONE`.
 
 **In a client channel:**
 - Feedback: `ok T3` · `edit R4: …` · `no Q2 too salesy` · `posted T3`
@@ -79,7 +79,7 @@ Each client's times are in the client's timezone; HQ uses `AGENCY_TIMEZONE`.
    `slack-app-manifest.json`. First replace the redirect URL with your dashboard's address.
    - Install the app.
    - Note the bot token (`xoxb-`), an app-level token with `connections:write` (`xapp-`), and the client ID and secret.
-   - Create `#hq` and one channel per client, and invite the bot to each.
+   - Create the Main X agent channel (e.g. `#main-x-agent`) and one channel per client, and invite the bot to each.
 2. **X:** create a developer app at developer.x.com.
    - Type: Web App. Enable OAuth 2.0.
    - Callback URL: `<dashboard>/x/callback`.

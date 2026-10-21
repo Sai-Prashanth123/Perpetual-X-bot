@@ -22,4 +22,4 @@ metadata:
    - **Experiments for next week** — one per client at most, named.
    Bump the version (minor for additions, major for a rewrite). No client voice, no private numbers
    beyond aggregate evidence.
-7. Post a short changelog to #hq: "Agency playbook vN: …" (max 6 bullets).
+7. Post a short changelog in the Main X agent channel: "Agency playbook vN: …" (max 6 bullets).

@@ -1,6 +1,6 @@
 ---
 name: agency-requests
-description: "Handle requests sent to this client's bot from the agency dashboard or HQ (e.g. 'draft a quote for <url>', 'ideas about <topic>')."
+description: "Handle requests sent to this client's bot from the agency dashboard or the Main X agent (e.g. 'draft a quote for <url>', 'ideas about <topic>')."
 version: 1.0.0
 metadata:
   hermes:
