@@ -321,6 +321,8 @@ def main(runtime=False):
         "gateway.multiplex_profiles": True, "gateway.profile_routes": routes,
         # Adding a client restarts the gateway; don't announce restarts in the reports channel.
         "slack.gateway_restart_notification": False,
+        # Reply in the conversation itself, like a chat, instead of opening a thread per message.
+        "slack.reply_in_thread": False,
     })
     hq_deliver = f"slack:{hq_channel}" if hq_channel else "local"
     fp = json.dumps([CRON_VERSION, hq_deliver, model, learn_model, agency_tz])
