@@ -32,6 +32,8 @@ SRC = Path("/opt/perpetual")
 TEMPLATE = SRC / "hermes-template"
 CRON_VERSION = (SRC / "CRON_VERSION").read_text().strip()
 SHARED_SKILLS = DATA / "shared-skills"
+# Private client voice packs copied onto the server (scripts/build_voice_import.py); never in git.
+IMPORTS = DATA / "imports"
 LEARNED = {"client-voice", "playbook"}
 PY = "/opt/hermes/.venv/bin/python"
 
@@ -203,6 +205,11 @@ def main(runtime=False):
 
     conn = connect_with_retry()
     ledger.ensure_schema(conn)
+    imported = _imported_clients()
+    if imported:
+        added = agency.seed_missing_clients(conn, imported)
+        if added:
+            log(f"imported {len(added)} new client(s): {', '.join(added)}")
     if seed and not runtime:
         agency.sync_clients(conn, seed)
     clients = [{"handle": r["handle"], "name": r["display_name"], "slack_channel": r["slack_channel"],
@@ -213,6 +220,8 @@ def main(runtime=False):
 
     # ---- shared agency playbook (written by HQ, read by every client)
     seed_skills(TEMPLATE / "shared-skills", SHARED_SKILLS, learned={"agency-playbook"})
+    for pack in sorted((IMPORTS / "_shared").glob("*/")) if (IMPORTS / "_shared").is_dir() else []:
+        shutil.copytree(pack, SHARED_SKILLS / pack.name, dirs_exist_ok=True)   # house standards: always current
 
     # ---- clients
     routes, channels, needs_backfill = [], [], []
@@ -230,6 +239,12 @@ def main(runtime=False):
                                       .replace("{{CLIENT_NAME}}", name).replace("{{CLIENT_HANDLE}}", handle))
         skills_dir = home / "skills" / "perpetual-x"
         seed_skills(TEMPLATE / "skills" / "perpetual-x", skills_dir, learned=LEARNED)
+        for skill in LEARNED:   # an imported voice pack replaces the blank starter, never a learned voice
+            pack = IMPORTS / handle / skill
+            dest = skills_dir / skill / "SKILL.md"
+            if (pack / "SKILL.md").exists() and (not dest.exists() or "version: 0.0.0" in dest.read_text()):
+                shutil.copytree(pack, skills_dir / skill, dirs_exist_ok=True)
+                log(f"@{handle}: imported {skill} from the voice pack")
         brief = skills_dir / "client-brief"
         brief.mkdir(parents=True, exist_ok=True)
         (brief / "SKILL.md").write_text(client_brief(c, handle, name))
@@ -244,12 +259,18 @@ def main(runtime=False):
             "plugins.enabled": ["perpetual"], "skills.external_dirs": [str(SHARED_SKILLS)],
         })
         if not channel:
-            log(f"WARNING: @{handle} has no slack_channel — its jobs stay local")
-        deliver = f"slack:{channel}" if channel else "local"
-        if channel:
-            routes.append({"name": f"x-{slug}", "platform": "slack", "chat_id": str(channel), "profile": slug})
-            channels.append(str(channel))
-        fp = json.dumps([CRON_VERSION, deliver, model, learn_model, tz])
+            # No channel yet: keep the client fully set up but idle. Nobody would see the output,
+            # so running its jobs would only spend Claude credits.
+            fp = json.dumps([CRON_VERSION, "no-channel"])
+            if reconcile_cron(home, slug, [], fp):
+                log(f"@{handle}: no Slack channel yet — jobs paused until it has one")
+            if not conn.execute("SELECT 1 FROM metrics_daily WHERE client = %s LIMIT 1", (handle,)).fetchone():
+                needs_backfill.append(handle)
+            continue
+        deliver = f"slack:{channel}"
+        routes.append({"name": f"x-{slug}", "platform": "slack", "chat_id": str(channel), "profile": slug})
+        channels.append(str(channel))
+        fp = json.dumps([CRON_VERSION, deliver, model, learn_model, tz, client_jobs_skills()])
         if reconcile_cron(home, slug, client_jobs(deliver, learn_model), fp):
             log(f"registered cron jobs for @{handle} → {deliver}")
         voice = skills_dir / "client-voice" / "SKILL.md"
@@ -313,6 +334,17 @@ def main(runtime=False):
         print(json.dumps({"clients": [c["handle"] for c in clients], "routes": len(routes)}))
 
 
+def _imported_clients():
+    path = IMPORTS / "clients.json"
+    if not path.exists():
+        return []
+    try:
+        return json.loads(path.read_text(encoding="utf-8")).get("clients") or []
+    except ValueError:
+        log("WARNING: imports/clients.json is not valid JSON; skipped")
+        return []
+
+
 def connect_with_retry(attempts=8):
     """The container's network can lag the boot by a few seconds; an external database
     (Neon, Supabase) shouldn't fail the whole start on the first try."""
@@ -365,9 +397,16 @@ metadata:
 """
 
 
+def client_jobs_skills():
+    """Part of the schedule fingerprint: jobs are re-registered when shared skills appear."""
+    return (SHARED_SKILLS / "agency-writing-standards" / "SKILL.md").exists()
+
+
 def client_jobs(deliver, learn_model):
     common = ["--deliver", deliver, "--failure-deliver", deliver]
     base = ["client-brief", "client-voice", "playbook", "agency-playbook"]
+    if (SHARED_SKILLS / "agency-writing-standards" / "SKILL.md").exists():
+        base.append("agency-writing-standards")
     return [
         {"name": "px-hunt", "schedule": "0 8-20/2 * * *",
          "prompt": "Run a hunt for the client: reply-hunter, then quote-hunter on the same candidate pool, then "

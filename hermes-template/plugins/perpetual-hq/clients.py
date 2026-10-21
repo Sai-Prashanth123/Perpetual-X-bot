@@ -97,33 +97,33 @@ def client_add(conn, p):
     handle = agency.norm_handle(p.get("handle"))
     if not re.fullmatch(r"[a-z0-9_]{1,15}", handle):
         raise ValueError("Give me the client's X handle, e.g. @alexvacca.")
-    if not p.get("employee"):
-        raise ValueError("Who on the team will run this account? (a name like Shravya)")
     if not p.get("niche_topics"):
         raise ValueError("What niche phrases should I watch for them? Specific ones work best, e.g. 'cold email, Clay GTM'.")
     _, profiles = console.run_actor("user-info", {"usernames": [handle]}, items_path="profiles")
     if not profiles:
         raise ValueError(f"I couldn't find @{handle} on X. Check the spelling.")
     x_name = profiles[0].get("display_name") or handle
-    employee, candidates = slackui.find_person(p["employee"])
-    if not employee:
-        names = ", ".join(c["real_name"] or c["name"] for c in candidates) or "nobody"
-        raise ValueError(f"I couldn't pin down '{p['employee']}' in Slack (matches: {names}). Who exactly?")
+    employee = None
+    if p.get("employee"):   # optional: the whole team can work on any client
+        employee, candidates = slackui.find_person(p["employee"])
+        if not employee:
+            names = ", ".join(c["real_name"] or c["name"] for c in candidates) or "nobody"
+            raise ValueError(f"I couldn't pin down '{p['employee']}' in Slack (matches: {names}). Who exactly?")
     channel_id, channel_name, created = _resolve_channel(p.get("channel"), handle)
     taken = conn.execute("SELECT handle FROM clients WHERE slack_channel = %s AND handle <> %s AND active",
                          (channel_id, handle)).fetchone()
     if taken:
         raise ValueError(f"#{channel_name} already belongs to @{taken['handle']}. Pick another channel.")
-    notes = _invite(channel_id, [employee["id"], _requester()])
+    notes = _invite(channel_id, [employee and employee["id"], _requester()])
     console_status = agency.console_onboard(handle, p.get("name") or x_name)
     agency.upsert_client(conn, handle, display_name=p.get("name") or x_name, niche_topics=p["niche_topics"],
                          watch_accounts=p.get("watch_accounts"), avoid_accounts=p.get("avoid_accounts"),
                          timezone=p.get("timezone") or DEFAULT_TZ, slack_channel=channel_id,
-                         employee_slack=employee["id"])
+                         employee_slack=employee and employee["id"])
     setup = apply_changes()
     return {
         "client": handle, "x_name": x_name, "channel": f"<#{channel_id}>", "channel_created": created,
-        "employee": employee["real_name"] or employee["name"], "console": console_status, "setup": setup,
+        "employee": (employee["real_name"] or employee["name"]) if employee else "the whole team", "console": console_status, "setup": setup,
         "connect_x_link": slackui.connect_link(handle),
         "next": ("I'm restarting in ~20 seconds to switch the channel on. Within a few minutes the client's "
                  "agent studies their posts, learns the voice, and says hello in the channel."),
@@ -152,6 +152,31 @@ def client_update(conn, p):
     agency.upsert_client(conn, handle, **fields)
     setup = apply_changes()
     return {"client": handle, "updated": [k for k, v in fields.items() if v is not None], "setup": setup}
+
+
+def client_channels(conn, p):
+    """Give clients a Slack channel (create #x-<handle>, or use one the user names). Their jobs start
+    once they have a channel."""
+    if p.get("handle"):
+        targets = [agency.get_client(conn, p["handle"])]
+        if not targets[0]:
+            raise ValueError(f"@{agency.norm_handle(p['handle'])} isn't a client.")
+    else:
+        targets = [c for c in agency.list_clients(conn) if not c["slack_channel"]]
+    if not targets:
+        return {"done": [], "note": "Every active client already has a channel."}
+    done, failed = [], []
+    for c in targets:
+        try:
+            channel_id, name, created = _resolve_channel(p.get("channel") if p.get("handle") else None, c["handle"])
+            _invite(channel_id, [c["employee_slack"], _requester()])
+            agency.upsert_client(conn, c["handle"], slack_channel=channel_id)
+            done.append({"client": c["handle"], "channel": f"<#{channel_id}>", "created": created})
+        except Exception as e:  # noqa: BLE001 — report per client, keep going
+            failed.append({"client": c["handle"], "error": str(e)})
+    setup = apply_changes() if done else ""
+    return {"done": done, "failed": failed, "setup": setup,
+            "next": "Restarting in ~20 seconds. Each client's agent then starts its schedule in its channel."}
 
 
 def client_remove(conn, p):
@@ -199,19 +224,24 @@ TOOLS = [
      "Add a new agency client and set everything up: checks the X handle, adds it to the scraping "
      "console, creates (or uses) its public Slack channel #x-<handle>, invites the employee and the "
      "requester, and starts the client's own agent (it learns their voice and says hello in the "
-     "channel). Required: handle, employee (a name, e.g. 'Shravya'), niche_topics (specific phrases). "
-     "Ask for anything missing before calling. Optional: channel (an existing channel the user made "
+     "channel). Required: handle and niche_topics (specific phrases). "
+     "Ask for anything missing before calling. Optional: employee (who runs it; default the whole team), channel (an existing channel the user made "
      "and invited the bot to), watch_accounts, avoid_accounts, timezone (default Asia/Kolkata), name.",
      {"handle": _S, "employee": _S, "niche_topics": _S, "watch_accounts": _S, "avoid_accounts": _S,
       "timezone": {**_S, "description": "IANA, e.g. Asia/Kolkata, Europe/London"}, "name": _S,
       "channel": {**_S, "description": "Existing channel (#name, name or ID). Omit to create #x-<handle>."}},
-     ["handle", "employee", "niche_topics"]),
+     ["handle", "niche_topics"]),
     ("client_update", client_update,
      "Change a client's settings: niche_topics, watch_accounts, avoid_accounts, timezone, name, "
      "employee (who runs it) or channel. Only pass what changes.",
      {"handle": _S, "employee": _S, "niche_topics": _S, "watch_accounts": _S, "avoid_accounts": _S,
       "timezone": _S, "name": _S, "channel": _S},
      ["handle"]),
+    ("client_channels", client_channels,
+     "Give clients their Slack channel. With no handle: create public #x-<handle> for EVERY active client "
+     "that has no channel yet (e.g. imported clients). With a handle: that client only, optionally "
+     "using an existing `channel` the user names. A client's scheduled work starts once it has a channel.",
+     {"handle": _S, "channel": _S}, []),
     ("client_remove", client_remove,
      "Stop working on a client: their scheduled jobs stop; history, learned voice and playbook are "
      "kept. ALWAYS ask the user to confirm first, then call with confirmed=true.",

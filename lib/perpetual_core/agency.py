@@ -319,3 +319,18 @@ def take_requests(conn, client):
            RETURNING id, request, by_name""", (client,)).fetchall()
     conn.commit()
     return [dict(r) for r in rows]
+
+
+def seed_missing_clients(conn, entries):
+    """Add imported clients that don't exist yet. Existing clients (and anything changed by chat)
+    are left alone, so re-running an import never overwrites live settings."""
+    added = []
+    for e in entries:
+        handle = norm_handle(e.get("handle"))
+        if not handle or get_client(conn, handle):
+            continue
+        upsert_client(conn, handle, display_name=e.get("name"), niche_topics=e.get("niche_topics") or None,
+                      watch_accounts=e.get("watch_accounts") or None, avoid_accounts=e.get("avoid_accounts") or None,
+                      timezone=e.get("timezone") or "Asia/Kolkata")
+        added.append(handle)
+    return added
