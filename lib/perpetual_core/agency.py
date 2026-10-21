@@ -373,7 +373,9 @@ def import_console_replies(conn, client, per_run=5):
         return []
     console_name = roster[client]
     items = []
-    for d in console.reply_drafts(console_name, limit=20)[:per_run]:
+    for d in console.reply_drafts(console_name, limit=20):
+        if len(items) >= per_run:
+            break
         src = d.get("source") or {}
         tid = src.get("tweet_id")
         options = [o for o in d.get("options") or [] if o.get("safe", True) and o.get("text")]
