@@ -17,7 +17,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
 
-from perpetual_core import agency, ledger, slackui, xpost
+from perpetual_core import agency, connections, ledger, notify, slackui, xpost
 
 app = FastAPI(title="Perpetual X connector", docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(SessionMiddleware, secret_key=os.environ.get("SESSION_SECRET") or secrets.token_hex(32),
@@ -88,6 +88,36 @@ def x_callback(request: Request, code: str = "", state: str = "", error: str = "
             except Exception:  # noqa: BLE001
                 pass
     return page("X connected", f"@{user['username']} is connected. Go back to Slack — 'Post now' works on its drafts.")
+
+
+@app.get("/connect/{provider}")
+def tool_connect(request: Request, provider: str, u: str = "", exp: str = "", sig: str = ""):
+    """A teammate connects their own Google or Notion (link DMed by Perpetual, valid 1 hour)."""
+    if provider not in connections.PROVIDERS or not connections.verify(provider, u, exp, sig):
+        return page("Link expired", "Ask Perpetual X in Slack to 'connect my google' (or notion) again.", ok=False, status=403)
+    if not connections.configured(provider):
+        return page("Not set up yet", f"{provider.title()} sign-in isn't configured on the server yet.", ok=False)
+    state = secrets.token_urlsafe(24)
+    request.session["tool_oauth"] = {"state": state, "provider": provider, "user": u}
+    return RedirectResponse(connections.authorize_url(provider, state), status_code=303)
+
+
+@app.get("/connect/{provider}/callback")
+def tool_callback(request: Request, provider: str, code: str = "", state: str = "", error: str = ""):
+    pending = request.session.pop("tool_oauth", None) or {}
+    if (error or not pending or pending.get("provider") != provider
+            or not hmac.compare_digest(state, pending.get("state", ""))):
+        return page("Not connected", f"The sign-in was cancelled or expired ({error or 'ask for a new link'}).", ok=False)
+    with db() as conn:
+        try:
+            account = connections.finish(conn, provider, pending["user"], code)
+        except Exception as e:  # noqa: BLE001
+            return page("Not connected", str(e)[:300], ok=False)
+    label = connections.PROVIDERS[provider]["label"]
+    notify.dm([pending["user"]], f"✅ {label} connected as *{account}*. Ask me things like "
+              + ("'what's on my calendar this week?', 'draft an email to …', 'save this report as a Google Doc'."
+                 if provider == "google" else "'save this research to Notion', 'find my content calendar page in Notion'."))
+    return page(f"{provider.title()} connected", f"{account} is connected. Go back to Slack.")
 
 
 @app.get("/")

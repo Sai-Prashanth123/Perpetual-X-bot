@@ -30,3 +30,11 @@ services:
         sync: false
       - key: X_CLIENT_SECRET
         sync: false
+      - key: GOOGLE_CLIENT_ID       # teammates connect their own Google (Calendar, Gmail, Drive, Docs, Sheets)
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: NOTION_CLIENT_ID       # teammates connect their own Notion
+        sync: false
+      - key: NOTION_CLIENT_SECRET
+        sync: false

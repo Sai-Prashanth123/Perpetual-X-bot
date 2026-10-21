@@ -289,3 +289,16 @@ CREATE TABLE IF NOT EXISTS calendar_slots (
     UNIQUE (client, code)
 );
 CREATE INDEX IF NOT EXISTS calendar_due ON calendar_slots (status, slot_at);
+
+-- v7: each teammate's own tool connections (Google, Notion), tokens encrypted.
+CREATE TABLE IF NOT EXISTS user_connections (
+    slack_user      TEXT NOT NULL,
+    provider        TEXT NOT NULL,                   -- google | notion
+    account         TEXT,                            -- e.g. the Google email
+    access_enc      TEXT NOT NULL,
+    refresh_enc     TEXT,
+    expires_at      TIMESTAMPTZ,
+    scopes          TEXT,
+    connected_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (slack_user, provider)
+);

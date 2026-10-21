@@ -474,6 +474,8 @@ _CTX = {}
 def register(ctx):
     _CTX["ctx"] = ctx
     console.register(ctx, toolset="xconsole")
+    from perpetual_core import workspace
+    workspace.register(ctx)          # the asking person's own Google / Notion, if they connected it
     for name, fn, description, props, required in LEDGER_TOOLS:
         ctx.register_tool(
             name=name,

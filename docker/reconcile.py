@@ -219,6 +219,9 @@ def main(runtime=False):
         # Small server: run scheduled jobs one at a time instead of piling them into memory.
         "HERMES_CRON_MAX_PARALLEL": env("HERMES_CRON_MAX_PARALLEL", "1"),
         "TAVILY_API_KEY": tavily_key(),
+        # Teammates' own Google / Notion connections (tokens refresh inside the bot).
+        "GOOGLE_CLIENT_ID": env("GOOGLE_CLIENT_ID"), "GOOGLE_CLIENT_SECRET": env("GOOGLE_CLIENT_SECRET"),
+        "NOTION_CLIENT_ID": env("NOTION_CLIENT_ID"), "NOTION_CLIENT_SECRET": env("NOTION_CLIENT_SECRET"),
     }
     model = env("PX_MODEL", "claude-sonnet-5-5")
     learn_model = env("PX_LEARN_MODEL", "claude-opus-5-5")
@@ -375,6 +378,7 @@ def main(runtime=False):
             log(f"retired profile {home.name} (no longer an active client)")
 
     # ---- HQ (default profile): holds the one Slack bot and routes client channels.
+    allow_all = (env("SLACK_ALLOW_ALL_USERS") or "").lower() in ("1", "true", "yes")
     install_plugin(DATA, "perpetual-hq")
     (DATA / "SOUL.md").write_text((TEMPLATE / "hq" / "SOUL.md").read_text())
     seed_skills(TEMPLATE / "hq" / "skills", DATA / "skills" / "perpetual-hq")
@@ -387,7 +391,10 @@ def main(runtime=False):
     write_env(DATA, {
         **shared,
         "SLACK_BOT_TOKEN": env("SLACK_BOT_TOKEN"), "SLACK_APP_TOKEN": env("SLACK_APP_TOKEN"),
-        "SLACK_ALLOWED_USERS": env("SLACK_ALLOWED_USERS"), "SLACK_HOME_CHANNEL": hq_channel,
+        # With everyone allowed, drop the allowlist (None removes the line from .env).
+        "SLACK_ALLOWED_USERS": None if allow_all else env("SLACK_ALLOWED_USERS"), "SLACK_HOME_CHANNEL": hq_channel,
+        # true = everyone in the Slack workspace can use the bot (the agency's choice).
+        "SLACK_ALLOW_ALL_USERS": "true" if allow_all else None,
         "SLACK_ALLOWED_CHANNELS": ",".join(channels) or "CNONE",
         # Answer in client channels without needing an @mention.
         "SLACK_FREE_RESPONSE_CHANNELS": ",".join(channels) or "CNONE",

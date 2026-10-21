@@ -213,6 +213,8 @@ def handle_post(raw_args, source=None, **_):
 
 
 def register(ctx):
+    from perpetual_core import workspace
+    workspace.register(ctx)
     console.register(ctx, toolset="xconsole")
     for name, fn, description, props, required in HQ_TOOLS:
         ctx.register_tool(
