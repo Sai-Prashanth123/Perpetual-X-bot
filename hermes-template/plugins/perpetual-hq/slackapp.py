@@ -45,6 +45,24 @@ async def _run(fn, *args, **kwargs):
     return await asyncio.to_thread(fn, *args, **kwargs)
 
 
+DONE = {"approve": "✅ Approved", "edit": "✏️ Saved your edit to", "reject": "🗑️ Rejected", "posted": "📤 Marked as posted:"}
+
+
+async def _tell(body, text, channel=None):
+    """A message only the person who clicked can see, so every click gets visible feedback."""
+    user = (body.get("user") or {}).get("id")
+    channel = channel or (body.get("channel") or {}).get("id") or (body.get("container") or {}).get("channel_id")
+    if not user:
+        return
+    try:
+        if channel:
+            await _run(slackui.slack, "chat.postEphemeral", channel=channel, user=user, text=text)
+        else:
+            await _run(slackui.slack, "chat.postMessage", channel=user, text=text)
+    except Exception as e:  # noqa: BLE001
+        log.warning("feedback message failed: %s", e)
+
+
 # ---------------------------------------------------------------- card buttons
 
 def _feedback(conn, client, code, action, by, text=None, note=None):
@@ -56,7 +74,13 @@ def _feedback(conn, client, code, action, by, text=None, note=None):
 async def on_approve(ack, body, action):
     await ack()
     v = _value(action)
-    await _run(_db, _feedback, v["c"], v["k"], "approve", _who(body))
+    log.info("card click: approve %s %s by %s", v.get("c"), v.get("k"), (body.get("user") or {}).get("id"))
+    try:
+        await _run(_db, _feedback, v["c"], v["k"], "approve", _who(body))
+        await _tell(body, f"{DONE['approve']} {v['k']}. The bot learns from this; post it with the card's buttons.")
+    except Exception as e:  # noqa: BLE001
+        log.error("approve failed: %s", e, exc_info=True)
+        await _tell(body, f"⚠️ Couldn't approve {v.get('k')}: {e}")
 
 
 async def on_open(ack, body, action):
@@ -66,15 +90,15 @@ async def on_open(ack, body, action):
 async def on_post(ack, body, action):
     await ack()
     v = _value(action)
+    log.info("card click: post %s %s by %s", v.get("c"), v.get("k"), (body.get("user") or {}).get("id"))
     msg = await _run(xpost.post_and_report, v["c"], v["k"], _who(body), "slack")
-    channel = (body.get("channel") or {}).get("id")
-    if channel and not msg.startswith(("✅", "Already")):
-        await _run(slackui.slack, "chat.postEphemeral", channel=channel, user=body["user"]["id"], text=msg)
+    await _tell(body, msg)
 
 
 async def on_edit(ack, body, action):
     await ack()
     v = _value(action)
+    log.info("card click: edit %s %s", v.get("c"), v.get("k"))
     s = await _run(_db, lambda conn: dict(ledger.get(conn, v["c"], v["k"]) or {}))
     if s:
         await _run(slackui.slack, "views.open", trigger_id=body["trigger_id"], view=slackui.edit_modal(s))
@@ -83,6 +107,7 @@ async def on_edit(ack, body, action):
 async def on_reject(ack, body, action):
     await ack()
     v = _value(action)
+    log.info("card click: reject %s %s", v.get("c"), v.get("k"))
     s = await _run(_db, lambda conn: dict(ledger.get(conn, v["c"], v["k"]) or {}))
     if s:
         await _run(slackui.slack, "views.open", trigger_id=body["trigger_id"], view=slackui.reject_modal(s))
@@ -99,6 +124,8 @@ async def on_edit_submit(ack, body, view):
     await ack()
     meta = json.loads(view["private_metadata"])
     await _run(_db, _feedback, meta["c"], meta["k"], "edit", _who(body), text=text.strip())
+    await _tell(body, f"{DONE['edit']} {meta['k']}. The card now shows your version, and the bot learns from it.",
+                channel=meta.get("ch"))
 
 
 async def on_reject_submit(ack, body, view):
@@ -106,6 +133,8 @@ async def on_reject_submit(ack, body, view):
     meta = json.loads(view["private_metadata"])
     note = (view["state"]["values"]["note"]["v"]["value"] or "").strip() or None
     await _run(_db, _feedback, meta["c"], meta["k"], "reject", _who(body), note=note)
+    await _tell(body, f"{DONE['reject']} {meta['k']}" + (f" ({note}). Noted for next time." if note else
+                ". Tip: a reason teaches the bot fastest."), channel=meta.get("ch"))
 
 
 async def on_article_posted(ack, body, action):
@@ -136,7 +165,8 @@ async def on_article_posted_submit(ack, body, view):
         return
     await ack()
     meta = json.loads(view["private_metadata"])
-    await _run(_db, _link_article, meta["c"], meta["k"], url, _who(body))
+    changed = await _run(_db, _link_article, meta["c"], meta["k"], url, _who(body))
+    await _tell(body, f"{DONE['posted']} {meta['k']}. {len(changed)} promo QRT card(s) now have an Open in X link.")
 
 
 # ---------------------------------------------------------------- Home tab (dashboard)
