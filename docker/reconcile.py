@@ -272,6 +272,14 @@ def main(runtime=False):
             if (pack / "SKILL.md").exists() and (not dest.exists() or "version: 0.0.0" in dest.read_text()):
                 shutil.copytree(pack, skills_dir / skill, dirs_exist_ok=True)
                 log(f"@{handle}: imported {skill} from the voice pack")
+            elif (pack / "references").is_dir():
+                # Newer imports bring extra reference files (claim bank, lint config): add the missing
+                # ones to a learned voice without touching anything already there.
+                dest_refs = skills_dir / skill / "references"
+                for ref in (pack / "references").iterdir():
+                    if ref.is_file() and not (dest_refs / ref.name).exists():
+                        dest_refs.mkdir(parents=True, exist_ok=True)
+                        shutil.copy(ref, dest_refs / ref.name)
         brief = skills_dir / "client-brief"
         brief.mkdir(parents=True, exist_ok=True)
         (brief / "SKILL.md").write_text(client_brief(c, handle, name))
