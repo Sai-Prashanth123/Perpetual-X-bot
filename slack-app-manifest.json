@@ -335,7 +335,7 @@
       ]
     },
     "redirect_urls": [
-      "https://YOUR-DASHBOARD.onrender.com/login/slack/callback"
+      "https://agency-web-hro0.onrender.com/login/slack/callback"
     ]
   },
   "settings": {
