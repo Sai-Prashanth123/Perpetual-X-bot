@@ -223,3 +223,69 @@ CREATE TABLE IF NOT EXISTS published_docs (
     channel         TEXT,
     ts              TEXT
 );
+
+-- v6: early-reply radar, post-mortems, lead finder, content calendar.
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS radar_accounts TEXT;      -- comma-separated handles
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS radar_enabled BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS icp TEXT;                  -- who buys from this client
+ALTER TABLE agency_requests ADD COLUMN IF NOT EXISTS kind TEXT;
+
+CREATE TABLE IF NOT EXISTS alerts (                -- radar alerts sent (daily cap, no repeats)
+    id              BIGSERIAL PRIMARY KEY,
+    client          TEXT NOT NULL,
+    kind            TEXT NOT NULL,
+    tweet_id        TEXT,
+    at              TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS alerts_client_at ON alerts (client, at DESC);
+
+CREATE TABLE IF NOT EXISTS postmortems (
+    client          TEXT NOT NULL,
+    tweet_id        TEXT NOT NULL,
+    code            TEXT,
+    format          TEXT,
+    url             TEXT,
+    verdict         TEXT,                            -- win | par | flop (null until the agent judges it)
+    metrics         JSONB,
+    baseline        JSONB,                           -- the client's 30-day medians for this format
+    vs_median       JSONB,                           -- ratio per metric
+    why             TEXT,
+    lesson          TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    judged_at       TIMESTAMPTZ,
+    PRIMARY KEY (client, tweet_id)
+);
+
+CREATE TABLE IF NOT EXISTS leads (
+    id              BIGSERIAL PRIMARY KEY,
+    client          TEXT NOT NULL,
+    code            TEXT NOT NULL,                   -- L1, L2… per client
+    handle          TEXT NOT NULL,
+    name            TEXT,
+    bio             TEXT,
+    followers       INTEGER,
+    role_company    TEXT,
+    said            TEXT,
+    said_url        TEXT,
+    fit_score       INTEGER,                         -- 1-10
+    why             TEXT,
+    opener          TEXT,
+    status          TEXT NOT NULL DEFAULT 'new',     -- new | contacted | replied | won | not_a_fit
+    note            TEXT,
+    found_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ,
+    UNIQUE (client, handle),
+    UNIQUE (client, code)
+);
+
+CREATE TABLE IF NOT EXISTS calendar_slots (
+    id              BIGSERIAL PRIMARY KEY,
+    client          TEXT NOT NULL,
+    slot_at         TIMESTAMPTZ NOT NULL,
+    code            TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'planned', -- planned | approved | reminded | posted | skipped
+    note            TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (client, code)
+);
+CREATE INDEX IF NOT EXISTS calendar_due ON calendar_slots (status, slot_at);

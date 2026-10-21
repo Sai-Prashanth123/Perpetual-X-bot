@@ -42,6 +42,10 @@ returns findings with numbers and sources.
 
   For each lever, give a concrete change plus the evidence for it.
 
+  Also propose **radar accounts**: 5-10 high-reach accounts in the niche whose posts the client
+  should reply to early. Add the clearly good ones with `radar_accounts` (add), and list them in the
+  document.
+
 ## 2. Synthesise like a strategist
 Say what is working, what is not, and why. Then give the 3-5 moves that would grow the account
 fastest, ranked by expected impact. Be specific and honest: numbers, links, examples. No generic

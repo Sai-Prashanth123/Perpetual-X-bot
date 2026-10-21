@@ -300,10 +300,11 @@ def _jsonable(row):
 
 # ---------------------------------------------------------------- dashboard -> bot requests
 
-def add_request(conn, client, request, by=None, requester_slack=None):
+def add_request(conn, client, request, by=None, requester_slack=None, kind=None):
     row = conn.execute(
-        "INSERT INTO agency_requests(client, request, by_name, requester_slack) VALUES (%s,%s,%s,%s) RETURNING id",
-        (client, request, by, requester_slack)).fetchone()
+        """INSERT INTO agency_requests(client, request, by_name, requester_slack, kind)
+           VALUES (%s,%s,%s,%s,%s) RETURNING id""",
+        (client, request, by, requester_slack, kind)).fetchone()
     conn.commit()
     return row["id"]
 
@@ -317,7 +318,7 @@ def pending_requests(conn, client):
 def take_requests(conn, client):
     rows = conn.execute(
         """UPDATE agency_requests SET picked_up_at = now() WHERE client = %s AND picked_up_at IS NULL
-           RETURNING id, request, by_name, requester_slack""", (client,)).fetchall()
+           RETURNING id, request, by_name, requester_slack, kind""", (client,)).fetchall()
     conn.commit()
     return [dict(r) for r in rows]
 

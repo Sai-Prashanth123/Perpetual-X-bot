@@ -3,6 +3,9 @@
     python -m perpetual_core.jobs snapshot-metrics [--backfill DAYS]
     python -m perpetual_core.jobs snapshot-viral
     python -m perpetual_core.jobs requests-pending <client>     # cron monitor script
+    python -m perpetual_core.jobs radar-scan                    # early-reply radar, all clients
+    python -m perpetual_core.jobs postmortem-pending <client>   # cron monitor: posts that need a verdict
+    python -m perpetual_core.jobs calendar-due <client>         # reminders for approved calendar slots
     python -m perpetual_core.jobs console-replies <client>      # import the console reply agent's drafts
     python -m perpetual_core.jobs apply-changes <user_id> <summary>   # background setup + DM receipts
 
@@ -50,6 +53,25 @@ def main(argv):
             codes = agency.import_console_replies(conn, argv[1].lower())
             if codes:
                 print(f"{len(codes)} reply draft(s) from the console's reply agent: {', '.join(codes)}")
+        elif cmd == "radar-scan":
+            # One model-free scan for every client; each hit becomes a request for that client's agent.
+            from . import radar
+            radar.scan(conn)
+        elif cmd == "postmortem-pending":
+            # Monitor script: prints the posts that need a verdict; unchanged output = no agent run.
+            from . import postmortem
+            for r in postmortem.prepare(conn, argv[1].lower()):
+                vs = ", ".join(f"{k} {v}x" for k, v in (r["vs_median"] or {}).items())
+                print(f"post-mortem due: {r['format']} {r['url']} (code {r['code'] or '-'}) vs median: {vs or 'no baseline'}")
+        elif cmd == "calendar-due":
+            # --no-agent cron: stdout goes to the channel verbatim, so print only real reminders.
+            from . import ledger, planner
+            for r in planner.due(conn, argv[1].lower()):
+                s = ledger.get(conn, argv[1].lower(), r["code"]) or {}
+                first = (r["text"] or "").strip().splitlines()[0][:140] if r["text"] else ""
+                link = ledger.intent_url(s["kind"], s.get("final_text") or s.get("text") or "", s.get("target_id"), s.get("target_url")) if s else None
+                print(f"⏰ Time to post *{r['code']}* ({r['kind']}): {first}\n"
+                      + (f"<{link}|Open in X> or " if link else "") + f"`/post {r['code']}` · `posted {r['code']}` once it's live")
         elif cmd == "requests-pending":
             # Monitor script: output only changes when there is new work, so an unchanged
             # (empty) result suppresses the agent run entirely.

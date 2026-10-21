@@ -17,6 +17,10 @@ metadata:
    - "produce your weekly package" → `weekly-package`
    - "write a promo QRT for … article A3" → `article-qrt` with the parent fields
    - a topic → `tweet-ideas`
+   - a request starting "RADAR" (kind radar) → `radar-reply` (fast; it sends its own alert, no document)
+   - "find leads", "who in my comments could buy?" → `lead-finder`
+   - "plan next week", "make a content calendar" → `content-calendar`
+   - "why did my post flop / win?" → `post-mortem` on that post (`postmortems` action recent first)
    Always through `content-pipeline`, always starting from `research_memory`.
 3. Publish the result with `publish_document`, passing the request's `requester_slack` as both
    `asked_by_slack` and `dm_to`, so the person who asked gets the link by DM. Title it after the ask.

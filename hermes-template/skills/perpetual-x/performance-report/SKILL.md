@@ -14,7 +14,7 @@ metadata:
 1. `outcomes_sync` days 7.
 2. `x_client_analytics` kind summary days 7, and days 28 for the baseline.
 3. `x_client_analytics` kind rhythm days 28; kind followers days 28.
-4. `stats_query` days 7 and days 28.
+4. `stats_query` days 7 and days 28; `postmortems` action recent days 7 (verdicts, reasons, lessons).
 5. `x_trends` for what's working in the niche overall.
 
 ## Report (scannable, ≤ 25 lines)

@@ -94,5 +94,36 @@ Documents are read on phones and laptops by busy people. Rules for all of them:
     ## Next week's focus
     ## Sources
 
+## Leads
+
+    # Leads: <date range>
+    **ICP used:** one line
+    **Start with:** L4, L1, L7
+
+    ### L4: Name (@handle), role at company (<followers> followers). Fit 9/10
+    **What they said:** "quote" ([link](url)), on <which post>
+    **Why they fit:** one line (ICP match and the buying signal)
+    **Suggested opener (you send it):**
+    > short DM in the client's voice
+
+    ## Sources
+    ## How to use this
+    `L4 contacted`, `L4 replied`, `L4 won`, `L4 not a fit: reason`
+
+## Calendar
+
+    # Plan: week of <date>
+    **This week:** 6 posts: A4 article Tue, L7 long tweet Thu, 2 opinion posts, 1 free resource, 1 reply sprint
+    **Approve:** reply `ok week` for all, or `ok T4` per post. Approved slots get a reminder at post time.
+
+    ## Monday 21 Oct
+    ### 09:30: T4, short opinion post
+    > copy
+    Why this slot: one line. Sources: [1]
+
+    ## Tuesday 22 Oct
+    ## Sources
+    ## How to use this
+
 ## General answer
 Title = the question in a few words. Bottom line first, then the reasoning, then sources.

@@ -238,6 +238,67 @@ def agency_requests_take(conn, client, p):
     return _ok(requests=agency.take_requests(conn, client))
 
 
+# ---------------------------------------------------------------- v6: radar, post-mortems, leads, calendar
+
+def send_radar_alert(conn, client, p):
+    res = slackui.post_alert(conn, client, p["headline"], p.get("tweet_url"), p.get("tweet_text"), p["codes"])
+    return _ok(**res, instructions="Alert sent. Reply with exactly [SILENT] if this was a scheduled hand-off.")
+
+
+def radar_accounts(conn, client, p):
+    from perpetual_core import radar
+    if p.get("enabled") is not None:
+        conn.execute("UPDATE clients SET radar_enabled = %s WHERE handle = %s", (bool(p["enabled"]), client))
+        conn.commit()
+    if p.get("add") or p.get("remove"):
+        accts = radar.set_accounts(conn, client, p.get("add") or [], p.get("remove") or [])
+    else:
+        row = conn.execute("SELECT radar_accounts, watch_accounts FROM clients WHERE handle = %s", (client,)).fetchone()
+        accts = radar.handles(row["radar_accounts"]) or radar.handles(row["watch_accounts"])
+    on = conn.execute("SELECT radar_enabled FROM clients WHERE handle = %s", (client,)).fetchone()["radar_enabled"]
+    return _ok(enabled=on, accounts=accts, alerts_today=radar.alerts_today(conn, client), daily_cap=radar.DAILY_CAP)
+
+
+def postmortems(conn, client, p):
+    from perpetual_core import postmortem
+    if p.get("action") == "judge":
+        postmortem.judge(conn, client, p["tweet_id"], p["verdict"], p.get("why"), p.get("lesson"))
+        return _ok(judged=p["tweet_id"])
+    if p.get("action") == "recent":
+        return _ok(postmortems=postmortem.recent(conn, client, days=p.get("days") or 14))
+    return _ok(open=postmortem.open_rows(conn, client))
+
+
+def leads_tool(conn, client, p):
+    from perpetual_core import leads
+    action = p.get("action") or "list"
+    if action == "known":
+        return _ok(already_listed=leads.known(conn, client, p.get("handles") or []))
+    if action == "save":
+        return _ok(saved=leads.save(conn, client, p.get("items") or []))
+    if action == "update":
+        return _ok(updated=leads.update(conn, client, p["code"], p["status"], p.get("note")))
+    return _ok(leads=leads.listing(conn, client, status=p.get("status"), days=p.get("days") or 60))
+
+
+def client_icp(conn, client, p):
+    if p.get("icp"):
+        conn.execute("UPDATE clients SET icp = %s WHERE handle = %s", (p["icp"].strip(), client))
+        conn.commit()
+    row = conn.execute("SELECT icp FROM clients WHERE handle = %s", (client,)).fetchone()
+    return _ok(icp=row["icp"], note=None if row["icp"] else "No ICP yet: write one from receipts and save it.")
+
+
+def calendar_tool(conn, client, p):
+    from perpetual_core import planner
+    action = p.get("action") or "week"
+    if action == "save":
+        return _ok(planned=planner.save(conn, client, p.get("slots") or []))
+    if action == "approve":
+        return _ok(approved=planner.approve(conn, client, p.get("codes")))
+    return _ok(slots=planner.week(conn, client, days=p.get("days") or 8))
+
+
 _STR = {"type": "string"}
 _INT = {"type": "integer"}
 _KIND = {"type": "string", "enum": sorted(ledger.PREFIX)}
@@ -349,6 +410,43 @@ LEDGER_TOOLS = [
      "Reply options the scraping console's own reply agent already prepared for this client (target tweet "
      "+ options). Raw material for reply work; nothing is posted or shown until you publish.",
      {"limit": _INT}, []),
+    ("send_radar_alert", send_radar_alert,
+     "Early-reply radar: after saving 2 replies (cards false) to a fresh post from a radar account, send ONE "
+     "compact alert to the channel: headline like '⚡ Early-reply window: @nick posted 12 min ago', the tweet, "
+     "and the reply codes with Open in X buttons.",
+     {"headline": _STR, "tweet_url": _STR, "tweet_text": _STR, "codes": {"type": "array", "items": _STR}},
+     ["headline", "codes"]),
+    ("radar_accounts", radar_accounts,
+     "The big accounts the early-reply radar watches for this client (checked every 10 minutes, max 4 alerts "
+     "a day). No arguments = list. add / remove handles; enabled true/false turns the radar on or off.",
+     {"add": {"type": "array", "items": _STR}, "remove": {"type": "array", "items": _STR},
+      "enabled": {"type": "boolean"}}, []),
+    ("postmortems", postmortems,
+     "Post-mortems of the client's own posts at 48h, vs the client's 30-day median for that format. "
+     "action=open (default): posts waiting for a verdict, with metrics, baseline and ratios. action=judge: "
+     "tweet_id, verdict (win/par/flop), why (specific: hook, topic, timing, format, length), lesson (what to "
+     "repeat or avoid). action=recent: judged ones (for the brief, report and learning review).",
+     {"action": {"type": "string", "enum": ["open", "judge", "recent"]}, "tweet_id": _STR,
+      "verdict": {"type": "string", "enum": ["win", "par", "flop"]}, "why": _STR, "lesson": _STR, "days": _INT},
+     []),
+    ("leads", leads_tool,
+     "Lead finder storage. action=known: which handles are already on the list. action=save: items "
+     "[{handle, name, bio, followers, role_company, said, said_url, fit_score 1-10, why, opener}] → codes L1… "
+     "action=update: code + status (contacted/replied/won/not_a_fit) + note. action=list (default).",
+     {"action": {"type": "string", "enum": ["list", "known", "save", "update"]},
+      "handles": {"type": "array", "items": _STR}, "items": {"type": "array", "items": {"type": "object"}},
+      "code": _STR, "status": _STR, "note": _STR, "days": _INT}, []),
+    ("client_icp", client_icp,
+     "The client's ideal customer profile (who buys from them: roles, company types/sizes, problems). "
+     "Read it before scoring leads; pass icp to set or refine it.",
+     {"icp": _STR}, []),
+    ("content_calendar", calendar_tool,
+     "The client's content calendar. action=save: slots [{code, slot_at ISO time WITH timezone, note}] for "
+     "drafts already saved. action=approve: codes, or none to approve every planned slot ('ok week'). "
+     "action=week (default): the next days' slots. Approved slots get a reminder in the channel at slot time.",
+     {"action": {"type": "string", "enum": ["week", "save", "approve"]},
+      "slots": {"type": "array", "items": {"type": "object"}}, "codes": {"type": "array", "items": _STR},
+      "days": _INT}, []),
     ("agency_requests_take", agency_requests_take,
      "Take this client's pending requests (handed over by Perpetual or a teammate's agent). Each comes "
      "with by_name and requester_slack: pass requester_slack as asked_by_slack and in dm_to when you "

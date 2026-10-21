@@ -15,6 +15,7 @@ This is how the bot gets better. Be rigorous: small samples are hypotheses, not 
 ## Gather
 1. `outcomes_sync` days 7.
 2. `stats_query` days 28 (and days 7 for what changed this week).
+   Also `postmortems` action recent days 14: every lesson there is evidence for the playbook.
 3. `x_client_content` days 28 — their real posts, including ones that didn't come from suggestions.
 4. `suggest_list` status edited and status rejected, days 14. Read the client's edits closely:
    every edit is a direct lesson about their voice.

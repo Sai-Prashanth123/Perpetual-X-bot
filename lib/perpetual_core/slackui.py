@@ -644,3 +644,40 @@ def publish_doc(conn, client, title, markdown, summary, kind="answer", asked_by=
             link = None
     research.log_doc(conn, client, title, kind, mode, link, channel, msg["ts"])
     return {"mode": mode, "link": link, "channel": channel, "ts": msg["ts"], "note": note}
+
+
+# ---------------------------------------------------------------- compact alerts (radar)
+
+def alert_blocks(headline, tweet_url, tweet_text, drafts):
+    """drafts: [{code, text, url}] → one compact message: the tweet, then each reply with Open in X."""
+    blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": f"*{headline[:280]}*"}},
+              {"type": "context", "elements": [{"type": "mrkdwn", "text":
+               "> " + (tweet_text or "").strip().replace("\n", "\n> ")[:600] + (f"\n<{tweet_url}|View on X>" if tweet_url else "")}]}]
+    for d in drafts[:3]:
+        sec = {"type": "section", "text": {"type": "mrkdwn", "text": f"*{d['code']}*  {d['text'][:2800]}"}}
+        if d.get("url"):
+            sec["accessory"] = {"type": "button", "action_id": "px_open", "url": d["url"],
+                                "text": {"type": "plain_text", "text": "Open in X"}}
+        blocks.append(sec)
+    blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text":
+                   "Reply in the first hour to land near the top. `posted R…` once sent, or `no R… reason`."}]})
+    return blocks
+
+
+def post_alert(conn, client, headline, tweet_url, tweet_text, codes):
+    from . import ledger
+    row = conn.execute("SELECT slack_channel FROM clients WHERE handle = %s", (client,)).fetchone()
+    if not row or not row["slack_channel"]:
+        raise SlackError("this client has no Slack channel yet")
+    drafts = []
+    for code in codes:
+        s = ledger.get(conn, client, code)
+        if s:
+            text = s.get("final_text") or s.get("text") or ""
+            drafts.append({"code": s["code"], "text": text,
+                           "url": ledger.intent_url(s["kind"], text, s.get("target_id"), s.get("target_url"))})
+    if not drafts:
+        raise SlackError("none of those codes are saved drafts")
+    res = slack("chat.postMessage", channel=row["slack_channel"], text=headline, unfurl_links=False,
+                unfurl_media=False, blocks=alert_blocks(headline, tweet_url, tweet_text, drafts))
+    return {"channel": res["channel"], "ts": res["ts"], "drafts": [d["code"] for d in drafts]}

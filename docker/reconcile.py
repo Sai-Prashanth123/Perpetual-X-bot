@@ -309,6 +309,8 @@ def main(runtime=False):
         brief.mkdir(parents=True, exist_ok=True)
         (brief / "SKILL.md").write_text(client_brief(c, handle, name))
         write_script(home, "px_requests.py", ["requests-pending", handle])
+        write_script(home, "px_postmortem.py", ["postmortem-pending", handle])
+        write_script(home, "px_slots.py", ["calendar-due", handle])
         # PX_SLACK_TOKEN, not SLACK_BOT_TOKEN: a profile holding SLACK_BOT_TOKEN would start its own
         # Slack connection for the same app (Hermes refuses duplicate credentials).
         write_env(home, {**shared, "CLIENT_HANDLE": handle, "PX_SLACK_TOKEN": env("SLACK_BOT_TOKEN")})
@@ -378,6 +380,7 @@ def main(runtime=False):
     seed_skills(TEMPLATE / "hq" / "skills", DATA / "skills" / "perpetual-hq")
     write_script(DATA, "px_metrics.py", ["snapshot-metrics"])
     write_script(DATA, "px_viral.py", ["snapshot-viral"])
+    write_script(DATA, "px_radar.py", ["radar-scan"])
     # The bot converses only in client channels (and DMs, which Slack never gates). The report
     # channel is deliberately left out, so messages there are ignored. An empty allowlist would
     # mean "every channel", hence the placeholder while there are no clients yet.
@@ -510,7 +513,8 @@ def client_jobs(deliver, learn_model, offset=0):
         {"name": "px-requests", "schedule": "every 2m",
          "prompt": "Work was handed to you (by Perpetual or a teammate's agent): follow agency-requests.",
          "args": common + skill_args(*base, "agency-requests", "reply-pack", "deep-research", "weekly-package",
-                                     *formats, "tweet-ideas", "reply-hunter", "quote-hunter")
+                                     *formats, "tweet-ideas", "reply-hunter", "quote-hunter", "radar-reply",
+                                     "lead-finder", "content-calendar", "post-mortem")
                  + ["--monitor-script", "px_requests.py", "--reasoning-effort", "high"]},
         {"name": "px-research", "schedule": f"{offset} 2 * * 1,3,5",
          "prompt": "Scheduled research run: follow deep-research (save to research_memory, publish nothing), "
@@ -522,6 +526,15 @@ def client_jobs(deliver, learn_model, offset=0):
         {"name": "px-report", "schedule": f"{offset} 11 * * 1",
          "prompt": "Weekly performance report: follow performance-report.",
          "args": common + skill_args("client-brief", "playbook", "doc-templates", "performance-report")},
+        {"name": "px-postmortem", "schedule": f"{(offset + 7) % 60} */2 * * *",
+         "prompt": "Posts reached 48 hours: follow post-mortem, then reply exactly [SILENT].",
+         "args": common + skill_args("client-brief", "client-voice", "playbook", "post-mortem")
+                 + ["--monitor-script", "px_postmortem.py"]},
+        {"name": "px-leads", "schedule": f"{offset} 10 * * 4",
+         "prompt": "Weekly lead finder: follow lead-finder.",
+         "args": common + skill_args("client-brief", "client-voice", "doc-templates", "lead-finder") + deep},
+        {"name": "px-slots", "schedule": "every 15m", "prompt": "",
+         "args": ["--deliver", deliver, "--no-agent", "--script", "px_slots.py"]},
         {"name": "px-learn", "schedule": f"{offset} 22 * * 0",
          "prompt": "Weekly learning review: follow learning-review and update the playbook and client-voice "
                    "skills. Then reply exactly [SILENT].",
@@ -536,6 +549,9 @@ def hq_jobs(deliver, learn_model):
          "args": ["--deliver", deliver, "--no-agent", "--script", "px_metrics.py"]},
         {"name": "px-viral", "schedule": "30 6,14 * * *", "prompt": "",
          "args": ["--deliver", deliver, "--no-agent", "--script", "px_viral.py"]},
+        # Early-reply radar: one model-free scan for every client; hits become client requests.
+        {"name": "px-radar", "schedule": "*/10 7-22 * * *", "prompt": "",
+         "args": ["--deliver", deliver, "--no-agent", "--script", "px_radar.py"]},
         {"name": "px-digest", "schedule": "0 9 * * *",
          "prompt": "Daily agency digest: follow agency-digest.",
          "args": common + skill_args("agency-digest")},

@@ -118,10 +118,45 @@ def delegate_to_client(conn, p):
                      "don't attempt the work yourself."))
 
 
+def agency_postmortems(conn, p):
+    from perpetual_core import postmortem
+    client = _client_arg(conn, p) if p.get("client") else None
+    return _ok(postmortems=postmortem.recent(conn, client, days=p.get("days") or 14, verdict=p.get("verdict")))
+
+
+def agency_leads(conn, p):
+    from perpetual_core import leads
+    client = _client_arg(conn, p) if p.get("client") else None
+    return _ok(leads=leads.listing(conn, client, status=p.get("status"), days=p.get("days") or 30))
+
+
+def radar_control(conn, p):
+    from perpetual_core import radar
+    handle = _client_arg(conn, p)
+    if p.get("enabled") is not None:
+        conn.execute("UPDATE clients SET radar_enabled = %s WHERE handle = %s", (bool(p["enabled"]), handle))
+        conn.commit()
+    accts = radar.set_accounts(conn, handle, p.get("add") or [], p.get("remove") or [])
+    on = conn.execute("SELECT radar_enabled FROM clients WHERE handle = %s", (handle,)).fetchone()["radar_enabled"]
+    return _ok(client=handle, enabled=on, accounts=accts, alerts_today=radar.alerts_today(conn, handle))
+
+
 _STR = {"type": "string"}
 _INT = {"type": "integer"}
 
 HQ_TOOLS = [
+    ("agency_postmortems", agency_postmortems,
+     "Post-mortems of posted content (48h after posting, vs each client's own median): verdict win/par/flop, "
+     "why, lesson. Filter by client and verdict. Use for 'what flopped this week and why?'.",
+     {"client": _STR, "verdict": {"type": "string", "enum": ["win", "par", "flop"]}, "days": _INT}, []),
+    ("agency_leads", agency_leads,
+     "Leads found in clients' comments and quotes (people who look like buyers), with fit score, why and "
+     "status. Filter by client and status.",
+     {"client": _STR, "status": _STR, "days": _INT}, []),
+    ("radar_control", radar_control,
+     "Early-reply radar for a client: list, add or remove the big accounts it watches, or turn it on/off.",
+     {"client": _STR, "add": {"type": "array", "items": _STR}, "remove": {"type": "array", "items": _STR},
+      "enabled": {"type": "boolean"}}, ["client"]),
     ("agency_overview", agency_overview,
      "Scorecard for every client over a window: followers and change, posts, likes, views, bookmarks, "
      "change vs the previous window, engagement rate, suggestion use, attention flags — plus per-employee "
