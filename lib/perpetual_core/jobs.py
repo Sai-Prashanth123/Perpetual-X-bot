@@ -10,6 +10,7 @@
     python -m perpetual_core.jobs apply-changes <user_id> <summary>   # background setup + DM receipts
     python -m perpetual_core.jobs meetings-pending              # cron monitor: finished meetings to follow up
     python -m perpetual_core.jobs tasks-remind                  # DM owners what's due today / overdue
+    python -m perpetual_core.jobs standup-tick                  # standup questions + summary at the right time
 
 Cron scripts run as plain subprocesses, outside any profile's secret scope, so shared
 settings are read from the file the boot reconciler writes (PERPETUAL_SHARED_ENV).
@@ -76,6 +77,9 @@ def main(argv):
             for r in meetings.pending(conn):
                 n = len(r["action_items"] or [])
                 print(f"meeting {r['id']} '{r['title']}' at {r['started_at']:%Y-%m-%d %H:%M}: {n} action item(s)")
+        elif cmd == "standup-tick":
+            from . import standup
+            standup.tick(conn)                         # DMs + one channel summary; stdout stays empty
         elif cmd == "tasks-remind":
             from . import tasks
             tasks.send_reminders(conn)                 # DMs only; stdout stays empty

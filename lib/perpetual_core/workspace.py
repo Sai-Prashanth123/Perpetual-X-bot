@@ -43,24 +43,33 @@ def _is_owner(user):
     return bool(user) and user in guard.owners()
 
 
-def _who(params):
-    """Whose account to use: the asker's, or the agency's when an owner asks for it (agency=true)."""
+def _who(params, conn=None, provider=None, mailbox=False):
+    """Whose account to use. One rule everywhere: the asker's own account if they connected one,
+    otherwise the shared agency account. The shared Gmail inbox (mailbox tools) is owners only."""
     user = connections.current_user()
+    if not user:
+        raise connections.NotConnected("I can only use a connected account when a person is asking.")
     if (params or {}).get("agency"):
-        if not _is_owner(user):
-            raise connections.NotConnected("Only an agency owner can use the agency-wide connection.")
+        if mailbox and not _is_owner(user):
+            raise connections.NotConnected("Only an agency owner can use the shared Gmail inbox.")
+        return connections.AGENCY
+    if conn is not None and provider and not connections.get_row(conn, user, provider) \
+            and connections.get_row(conn, connections.AGENCY, provider):
+        if mailbox and not _is_owner(user):
+            raise connections.NotConnected("The shared agency Gmail is for owners only. Say 'connect my google' "
+                                           "to use your own Gmail.")
         return connections.AGENCY
     return user
 
 
-def _with_token(provider):
+def _with_token(provider, mailbox=False):
     def wrap(fn):
         def handler(params, **kwargs):
             del kwargs
             try:
                 conn = ledger.connect()
                 try:
-                    tok = connections.token(conn, _who(params), provider)
+                    tok = connections.token(conn, _who(params, conn, provider, mailbox), provider)
                 finally:
                     conn.close()
                 return fn(tok, params or {})
@@ -288,7 +297,7 @@ def _plain(part):
     return ""
 
 
-@_with_token("google")
+@_with_token("google", mailbox=True)
 def gmail_search(tok, p):
     ids = _call("GET", f"{G}/gmail/v1/users/me/messages", tok,
                 params={"q": p.get("query") or "", "maxResults": min(p.get("limit") or 10, 25)}).get("messages", [])
@@ -301,14 +310,14 @@ def gmail_search(tok, p):
     return _ok(messages=out)
 
 
-@_with_token("google")
+@_with_token("google", mailbox=True)
 def gmail_read(tok, p):
     msg = _call("GET", f"{G}/gmail/v1/users/me/messages/{p['id']}", tok, params={"format": "full"})
     return _ok(subject=_header(msg, "subject"), sender=_header(msg, "from"), to=_header(msg, "to"),
                date=_header(msg, "date"), body=_plain(msg.get("payload", {}))[:8000])
 
 
-@_with_token("google")
+@_with_token("google", mailbox=True)
 def gmail_draft(tok, p):
     m = EmailMessage()
     m["To"] = ", ".join(p["to"]) if isinstance(p["to"], list) else p["to"]
@@ -320,7 +329,7 @@ def gmail_draft(tok, p):
                open="https://mail.google.com/mail/u/0/#drafts")
 
 
-@_with_token("google")
+@_with_token("google", mailbox=True)
 def gmail_send(tok, p):
     """Send only after the person has seen the final text and said 'send' (confirm=true)."""
     if not p.get("confirm"):

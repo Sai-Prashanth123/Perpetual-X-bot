@@ -238,6 +238,7 @@ def main(runtime=False):
     script_env = {k: shared.get(k) for k in ("DATABASE_URL", "XCONSOLE_API_KEY", "XCONSOLE_URL", "OWNER_SLACK_IDS",
                                              # meeting follow-up reads the agency's Read AI (encrypted token)
                                              "TOKEN_ENCRYPTION_KEY", "READAI_CLIENT_ID", "READAI_CLIENT_SECRET")}
+    script_env["HQ_SLACK_CHANNEL"] = hq_channel
     script_env["SLACK_BOT_TOKEN"] = env("SLACK_BOT_TOKEN")      # jobs that DM receipts
     shared_env.write_text("".join(f"{k}={v}\n" for k, v in script_env.items() if v))
     shared_env.chmod(0o600)
@@ -393,6 +394,7 @@ def main(runtime=False):
     write_script(DATA, "px_trends.py", ["trend-scan"])
     write_script(DATA, "px_meetings.py", ["meetings-pending"])
     write_script(DATA, "px_tasks.py", ["tasks-remind"])
+    write_script(DATA, "px_standup.py", ["standup-tick"])
     # The bot converses only in client channels (and DMs, which Slack never gates). The report
     # channel is deliberately left out, so messages there are ignored. An empty allowlist would
     # mean "every channel", hence the placeholder while there are no clients yet.
@@ -582,6 +584,9 @@ def hq_jobs(deliver, learn_model):
         # Morning DM to each owner: tasks due today or overdue (model-free).
         {"name": "px-tasks", "schedule": "30 8 * * 1-5", "prompt": "",
          "args": ["--deliver", deliver, "--no-agent", "--script", "px_tasks.py"]},
+        # Daily standup: questions 45 min before, summary 5 min before (times set in chat; model-free).
+        {"name": "px-standup", "schedule": "*/5 * * * *", "prompt": "",
+         "args": ["--deliver", deliver, "--no-agent", "--script", "px_standup.py"]},
         {"name": "px-digest", "schedule": "0 9 * * *",
          "prompt": "Daily agency digest: follow agency-digest.",
          "args": common + skill_args("agency-digest")},

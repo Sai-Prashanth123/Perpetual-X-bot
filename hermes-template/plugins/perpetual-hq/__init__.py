@@ -213,11 +213,12 @@ def handle_post(raw_args, source=None, **_):
 
 
 def register(ctx):
-    from perpetual_core import guard, meetings, tasks, workspace
+    from perpetual_core import guard, meetings, standup, tasks, workspace
     guard.register(ctx)          # power tools: owners only; secrets: never
     workspace.register(ctx)
     tasks.register(ctx)          # team tasks (chat, meetings, standups)
     meetings.register(ctx)       # meeting follow-up from the agency's Read AI
+    standup.register(ctx)        # daily standup: questions, answers → tasks, summary
     from . import studio_hq
     studio_hq.register(ctx)      # run_studio: content for one or all clients
     console.register(ctx, toolset="xconsole")

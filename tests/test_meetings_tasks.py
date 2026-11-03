@@ -179,8 +179,10 @@ def test_meeting_sync():
 
 def test_agency_guard():
     connections.current_user = lambda: "USHR"
-    out = json.loads(workspace.readai_meetings({"agency": True}))
-    check(not out["success"] and "owner" in out["error"], "non-owner can't use the agency account")
+    out = json.loads(workspace.gmail_search({"agency": True, "query": "x"}))
+    check(not out["success"] and "owner" in out["error"], "non-owner can't use the shared Gmail inbox")
+    out = json.loads(workspace.readai_meetings({}))
+    check(not out["success"] and out.get("not_connected"), "non-owner falls back to the shared account (not connected here)")
     out = json.loads(workspace.connect_account({"tool": "readai", "for_agency": True}))
     check(not out["success"] and "owner" in out["error"], "non-owner can't connect an agency account")
     connections.current_user = lambda: "UOWNER"
@@ -228,3 +230,35 @@ if __name__ == "__main__":
     test_meeting_sync()
     test_agency_guard()
     print("all good")
+
+
+def test_shared_fallback():
+    """One rule: own account if connected, else the shared agency one; shared Gmail is owners only."""
+    conn = ledger.connect()
+    f = connections._fernet()
+    for p in ("google", "readai"):
+        conn.execute("""INSERT INTO user_connections(slack_user, provider, account, access_enc, expires_at)
+                        VALUES ('agency', %s, 'hello@tp.com', %s, now() + interval '1 hour')
+                        ON CONFLICT (slack_user, provider) DO UPDATE SET access_enc = EXCLUDED.access_enc,
+                        expires_at = EXCLUDED.expires_at""", (p, f.encrypt(f"AGENCY-{p}".encode()).decode()))
+    conn.commit()
+    seen = []
+    workspace.readai.recent = lambda tok, days, limit: seen.append(tok) or []
+    connections.current_user = lambda: "USHR"
+    out = json.loads(workspace.readai_meetings({}))
+    check(out["success"] and seen[-1] == "AGENCY-readai", "teammate without own Read AI uses the shared one")
+    out = json.loads(workspace.gmail_search({"query": "x"}))
+    check(not out["success"] and "owners only" in out["error"], "teammate can't read the shared Gmail")
+    connections.current_user = lambda: "UOWNER"
+    tok = []
+    workspace._call = lambda *a, **k: tok.append(a[2]) or {"messages": []}
+    json.loads(workspace.gmail_search({"query": "x"}))
+    check(tok and tok[-1] == "AGENCY-google", "owner without own Google uses the shared inbox")
+    conn.execute("DELETE FROM user_connections WHERE slack_user = 'agency'")
+    conn.commit()
+    conn.close()
+
+
+if __name__ == "__main__":
+    test_shared_fallback()
+    print("shared fallback good")

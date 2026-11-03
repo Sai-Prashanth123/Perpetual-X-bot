@@ -360,3 +360,33 @@ CREATE TABLE IF NOT EXISTS meetings (
     tasks_created INT,
     note          TEXT
 );
+
+-- v10: daily standup run from Slack.
+CREATE TABLE IF NOT EXISTS standup_config (
+    id              INT PRIMARY KEY DEFAULT 1,
+    time            TEXT NOT NULL DEFAULT '11:30',
+    timezone        TEXT NOT NULL DEFAULT 'Asia/Kolkata',
+    days            TEXT NOT NULL DEFAULT '1,2,3,4,5',
+    lead_minutes    INT NOT NULL DEFAULT 45,
+    summary_minutes INT NOT NULL DEFAULT 5,
+    channel         TEXT,
+    members         JSONB,                       -- null/empty = everyone in Slack
+    excluded        JSONB,
+    enabled         BOOLEAN NOT NULL DEFAULT true
+);
+CREATE TABLE IF NOT EXISTS standup_runs (
+    day          DATE PRIMARY KEY,
+    asked_at     TIMESTAMPTZ,
+    asked_count  INT,
+    summary_at   TIMESTAMPTZ
+);
+CREATE TABLE IF NOT EXISTS standup_answers (
+    day          DATE NOT NULL,
+    slack_user   TEXT NOT NULL,
+    name         TEXT,
+    yesterday    JSONB,
+    today        JSONB,
+    blockers     JSONB,
+    answered_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (day, slack_user)
+);
