@@ -390,3 +390,19 @@ CREATE TABLE IF NOT EXISTS standup_answers (
     answered_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (day, slack_user)
 );
+
+-- v11: daily Slack List per day, check-ins, intro.
+CREATE TABLE IF NOT EXISTS daily_lists (
+    day        DATE PRIMARY KEY,
+    list_id    TEXT NOT NULL,
+    url        TEXT,
+    columns    JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS list_id TEXT;
+ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS list_item_id TEXT;
+ALTER TABLE standup_config ADD COLUMN IF NOT EXISTS checkin_time TEXT NOT NULL DEFAULT '15:00';
+ALTER TABLE standup_config ADD COLUMN IF NOT EXISTS eod_time TEXT NOT NULL DEFAULT '20:15';
+ALTER TABLE standup_config ADD COLUMN IF NOT EXISTS intro_sent_at TIMESTAMPTZ;
+ALTER TABLE standup_runs ADD COLUMN IF NOT EXISTS checkin_at TIMESTAMPTZ;
+ALTER TABLE standup_runs ADD COLUMN IF NOT EXISTS eod_at TIMESTAMPTZ;

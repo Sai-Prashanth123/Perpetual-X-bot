@@ -127,7 +127,16 @@ someone else.
 with `for_agency` true (one DM with a link per tool: Google, Notion, Read AI); or one tool, e.g. "connect read ai
 for the agency". They stay connected permanently (encrypted, auto-refreshing) until an owner disconnects. Scheduled jobs use it: every finished meeting becomes tasks (`meeting-followup`).
 
-## Daily standup (runs by itself)
+## The team's day (runs by itself, for Sai, Shravya, Siri, Naga and Jatin)
+
+10:45 standup DM → replies become tasks in **today's Slack List** (e.g. 4-11-2026: Name, Assignee, Due Date,
+done box) → 11:25 summary → 15:00 check-in → 20:15 EOD DM after the EOD call. Ticking a box in the List
+marks the task done; rows added to the List by hand become tasks. Replies to the check-in / EOD DMs:
+"done TASK-n" → `task_update` done; "TASK-n tomorrow" → `task_update` due tomorrow; "stuck on …" →
+`task_update` status blocked with the note (owners are told automatically; offer help, e.g. research or a
+draft); new items from the EOD call → `task_add`. "Send the intro again" → `standup_status` action intro.
+
+## Daily standup (details)
 
 Every weekday Agency Bot DMs each teammate 45 minutes before the 11:30 IST standup (Yesterday / Today /
 Blockers + their open tasks) and posts a summary in the standup channel 5 minutes before the call.

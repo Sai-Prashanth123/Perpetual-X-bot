@@ -103,6 +103,7 @@ def add(conn, items, created_by=None, people=None, notify_owners=True, source="m
         if oid and oid != created_by:
             per_owner.setdefault(oid, []).append(row)
     conn.commit()
+    to_list(conn, added)
     if notify_owners:
         for oid, rows in per_owner.items():
             notify.dm([oid], "📝 New task" + ("s" if len(rows) > 1 else "") + " for you:\n"
@@ -143,10 +144,41 @@ def update(conn, task_code, by=None, status=None, due=None, owner=None, title=No
     sets.append("updated_at = now()")
     row = conn.execute(f"UPDATE team_tasks SET {', '.join(sets)} WHERE id = %s RETURNING *", (*vals, tid)).fetchone()
     conn.commit()
+    if status in ("done", "open"):
+        try:
+            from . import lists
+            lists.set_done(conn, row, status == "done")
+        except Exception:  # noqa: BLE001 — the List is a mirror; the task itself is updated
+            pass
+    if status == "blocked":
+        notify.dm([o for o in notify.owners() if o != by],
+                  f"🚧 {row['owner_name'] or 'Someone'} is blocked on {code(row)} {row['title']}"
+                  + (f": {note}" if note else "") + ". Can you help unblock it?")
     if owner and row["owner_slack"] and row["owner_slack"] != by:
         notify.dm([row["owner_slack"]], f"📝 {code(row)} is now yours: {row['title']}"
                   + (f" (due {row['due']:%a %d %b})" if row["due"] else ""))
     return view(row)
+
+
+def to_list(conn, rows, day=None):
+    """Mirror new tasks into today's Slack List (best effort: never blocks adding a task)."""
+    from .settings import env
+    if (env("PX_DAILY_LIST") or "on").lower() in ("off", "0", "false") or not rows:
+        return
+    try:
+        from . import lists, standup
+        team = [p["id"] for p in standup.members(standup.config(conn))]
+        for r in rows:
+            if r["status"] in OPEN:
+                lists.add_task(conn, r, day=day or _local_today(conn), member_ids=team)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _local_today(conn):
+    from zoneinfo import ZoneInfo
+    from . import standup
+    return datetime.now(ZoneInfo(standup.config(conn)["timezone"])).date()
 
 
 # ---------------------------------------------------------------- reads

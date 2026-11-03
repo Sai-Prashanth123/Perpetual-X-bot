@@ -77,6 +77,9 @@ def main(argv):
             for r in meetings.pending(conn):
                 n = len(r["action_items"] or [])
                 print(f"meeting {r['id']} '{r['title']}' at {r['started_at']:%Y-%m-%d %H:%M}: {n} action item(s)")
+        elif cmd == "team-intro":
+            from . import standup
+            print(f"intro sent to {standup.send_intro(conn, force='--force' in argv)} member(s)")
         elif cmd == "standup-tick":
             from . import standup
             standup.tick(conn)                         # DMs + one channel summary; stdout stays empty
