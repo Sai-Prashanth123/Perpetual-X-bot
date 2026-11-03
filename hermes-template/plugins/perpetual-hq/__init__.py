@@ -213,7 +213,8 @@ def handle_post(raw_args, source=None, **_):
 
 
 def register(ctx):
-    from perpetual_core import workspace
+    from perpetual_core import guard, workspace
+    guard.register(ctx)          # power tools: owners only; secrets: never
     workspace.register(ctx)
     console.register(ctx, toolset="xconsole")
     for name, fn, description, props, required in HQ_TOOLS:
