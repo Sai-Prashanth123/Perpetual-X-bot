@@ -35,7 +35,7 @@ def sync(conn, tok=None, fetch_list=None, fetch_one=None, now=None):
     fetch_one = fetch_one or (lambda mid: readai.get(tok, mid))
     seen = {r["id"] for r in conn.execute("SELECT id FROM meetings WHERE started_at > now() - interval '7 days' "
                                           "OR fetched_at > now() - interval '7 days'")}
-    stored = []
+    stored, locked = [], []
     for m in fetch_list():
         mid = f"readai:{m['id']}"
         if not m.get("id") or mid in seen:
@@ -44,19 +44,37 @@ def sync(conn, tok=None, fetch_list=None, fetch_one=None, now=None):
         ended = _ts(m.get("end"))
         if ended is None and started and now - started < 4 * 3600:
             continue                                   # still running (or no end yet)
-        full = fetch_one(m["id"])
+        try:
+            full = fetch_one(m["id"])
+        except readai.ReadAIError as e:
+            if "out_of_quota" not in str(e):
+                continue                               # one bad meeting never blocks the rest; retried next run
+            # Read AI plan limit: the meeting is locked. Record it once (closed) and tell the owners.
+            conn.execute("""INSERT INTO meetings(id, source, title, started_at, ended_at, url, processed_at, note)
+                            VALUES (%s,'readai',%s,to_timestamp(%s),to_timestamp(%s),%s,now(),'readai_out_of_quota')
+                            ON CONFLICT (id) DO NOTHING""", (mid, m.get("title"), started, ended, m.get("url")))
+            locked.append(m.get("title") or "a meeting")
+            continue
         if not full.get("summary") and not full.get("action_items") and (now - (ended or started or now)) < WAIT_FOR_NOTES_H * 3600:
             continue                                   # notes not written yet; try next run
+        nothing_to_do = not full.get("action_items")
         conn.execute(
             """INSERT INTO meetings(id, source, title, started_at, ended_at, participants, summary, action_items,
-                                    key_questions, url)
-               VALUES (%s,'readai',%s,to_timestamp(%s),to_timestamp(%s),%s,%s,%s,%s,%s)
+                                    key_questions, url, processed_at, note)
+               VALUES (%s,'readai',%s,to_timestamp(%s),to_timestamp(%s),%s,%s,%s,%s,%s,%s,%s)
                ON CONFLICT (id) DO NOTHING""",
             (mid, full.get("title") or m.get("title"), started, ended, json.dumps(full.get("participants") or []),
              full.get("summary"), json.dumps(full.get("action_items") or []),
-             json.dumps(full.get("key_questions") or []), full.get("url")))
-        stored.append(mid)
+             json.dumps(full.get("key_questions") or []), full.get("url"),
+             datetime.now() if nothing_to_do else None, "no action items" if nothing_to_do else None))
+        if not nothing_to_do:
+            stored.append(mid)
     conn.commit()
+    if locked:
+        from . import notify
+        notify.dm(notify.owners(), "⚠️ Read AI's plan quota is used up, so I can't read: " + ", ".join(locked[:5])
+                  + ". Those meetings won't become tasks. Upgrade the Read AI plan (or free up quota) to keep "
+                    "meeting follow-up running; or tell me the action items and I'll add the tasks.")
     return stored
 
 

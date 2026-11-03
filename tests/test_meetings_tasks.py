@@ -192,7 +192,36 @@ def test_agency_guard():
     check(not out["success"] and out.get("not_connected"), "agency account not connected yet → clear message")
 
 
+def test_meeting_quota():
+    conn = ledger.connect()
+    now = time.time()
+    a, b, c = (f"Q{uuid.uuid4().hex[:8]}" for _ in range(3))
+    iso = lambda t: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))  # noqa: E731
+    listed = [{"id": x, "title": f"m {x}", "start": iso(now - 20000), "end": iso(now - 18000)} for x in (a, b, c)]
+
+    def one(mid):
+        if mid == a:
+            raise readai.ReadAIError('Read AI -> HTTP 403: {"error_reason":"out_of_quota"}', 403)
+        if mid == b:
+            return {"title": "standup", "summary": None, "action_items": []}
+        return {"title": "client call", "summary": "s", "action_items": [{"text": "Do it", "owner": None}]}
+    SENT.clear()
+    stored = meetings.sync(conn, tok="x", fetch_list=lambda: listed, fetch_one=one, now=now)
+    check(stored == [f"readai:{c}"], "locked and empty meetings don't wake the agent; others continue")
+    check(SENT and "quota" in SENT[0][1] and SENT[0][0] == ["UOWNER"], "owners told about the Read AI quota")
+    SENT.clear()
+    meetings.sync(conn, tok="x", fetch_list=lambda: listed, fetch_one=one, now=now)
+    check(not SENT, "quota warning only once per meeting")
+    ids = [f"readai:{x}" for x in (a, b, c)]
+    pend = {r["id"] for r in meetings.pending(conn, 50)}
+    check(f"readai:{c}" in pend and f"readai:{a}" not in pend and f"readai:{b}" not in pend, "only actionable pending")
+    conn.execute("DELETE FROM meetings WHERE id = ANY(%s)", (ids,))
+    conn.commit()
+    conn.close()
+
+
 if __name__ == "__main__":
+    test_meeting_quota()
     test_readai_oauth()
     test_readai_normalize()
     test_tasks()
