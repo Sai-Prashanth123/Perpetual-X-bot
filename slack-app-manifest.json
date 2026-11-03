@@ -308,7 +308,7 @@
     },
     "oauth_config": {
         "redirect_urls": [
-            "https://agency-web-hro0.onrender.com/login/slack/callback"
+            "https://140-245-224-134.sslip.io/login/slack/callback"
         ],
         "scopes": {
             "user": [
