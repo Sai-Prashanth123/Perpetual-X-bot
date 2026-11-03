@@ -1,12 +1,16 @@
-"""Personal tool connections: each teammate connects their own Google (Calendar, Gmail, Drive,
-Docs, Sheets) and Notion, and the bot uses an account only when that same person is asking.
+"""Personal tool connections: each teammate connects their own Google (Calendar, Meet, Gmail, Drive,
+Docs, Sheets), Notion and Read AI, and the bot uses an account only when that same person is asking.
 
-Flow: the person asks Perpetual "connect my Google" → a signed link is DMed to them (never posted
+One exception, chosen by an owner: an *agency* connection (stored under AGENCY) that scheduled jobs
+may use, e.g. the agency's Read AI so finished meetings become tasks without anyone asking.
+
+Flow: the person asks Agency Bot "connect my Google" → a signed link is DMed to them (never posted
 in a channel, where someone else could click it) → they sign in on the connector site → tokens are
 stored encrypted under their Slack user id. Scheduled jobs have no person behind them, so they
 can't use anyone's account.
 """
 
+import base64
 import hashlib
 import hmac
 import json
@@ -25,7 +29,10 @@ GOOGLE_SCOPES = " ".join([
     "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/documents",
     "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/meetings.space.readonly",     # Meet: past calls, participants, transcripts
 ])
+READAI_SCOPES = "openid email profile meeting:read offline_access"
+AGENCY = "agency"          # pseudo-user for the agency-wide connection (owners only)
 
 PROVIDERS = {
     "google": {"label": "Google (Calendar, Gmail, Drive, Docs, Sheets)",
@@ -36,6 +43,10 @@ PROVIDERS = {
                "auth_url": "https://api.notion.com/v1/oauth/authorize",
                "token_url": "https://api.notion.com/v1/oauth/token",
                "id_env": "NOTION_CLIENT_ID", "secret_env": "NOTION_CLIENT_SECRET"},
+    "readai": {"label": "Read AI (meeting notes, summaries, action items)",
+               "auth_url": "https://authn.read.ai/oauth2/auth",
+               "token_url": "https://authn.read.ai/oauth2/token",
+               "id_env": "READAI_CLIENT_ID", "secret_env": "READAI_CLIENT_SECRET"},
 }
 
 
@@ -90,11 +101,24 @@ def redirect_uri(provider):
     return f"{(env('PUBLIC_URL') or env('AGENCY_WEB_URL') or '').rstrip('/')}/connect/{provider}/callback"
 
 
+def pkce_verifier(state):
+    """PKCE verifier derived from the OAuth state, so nothing extra has to be stored between the
+    redirect and the callback (the state itself is random and checked against the session)."""
+    return hmac.new((env("INTERNAL_TOKEN") or "").encode(), f"pkce|{state}".encode(), hashlib.sha256).hexdigest()
+
+
+def pkce_challenge(verifier):
+    return base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+
+
 def authorize_url(provider, state):
     p = PROVIDERS[provider]
     q = {"client_id": env(p["id_env"]), "redirect_uri": redirect_uri(provider), "response_type": "code", "state": state}
     if provider == "google":
         q.update(scope=GOOGLE_SCOPES, access_type="offline", prompt="consent", include_granted_scopes="true")
+    elif provider == "readai":
+        q.update(scope=READAI_SCOPES, code_challenge=pkce_challenge(pkce_verifier(state)),
+                 code_challenge_method="S256")
     else:
         q.update(owner="user")
     return f"{p['auth_url']}?{urllib.parse.urlencode(q)}"
@@ -110,9 +134,13 @@ def _post(url, data=None, headers=None, body=None):
         raise RuntimeError(f"{e.code}: {e.read().decode(errors='replace')[:300]}") from None
 
 
-def _exchange(provider, code):
+def _exchange(provider, code, state=None):
     p = PROVIDERS[provider]
     cid, secret = env(p["id_env"]), env(p["secret_env"])
+    if provider == "readai":
+        return _post(p["token_url"], {"grant_type": "authorization_code", "code": code, "client_id": cid,
+                                      "client_secret": secret, "redirect_uri": redirect_uri(provider),
+                                      "code_verifier": pkce_verifier(state or "")})
     if provider == "google":
         return _post(p["token_url"], {"code": code, "client_id": cid, "client_secret": secret,
                                       "redirect_uri": redirect_uri(provider), "grant_type": "authorization_code"})
@@ -128,6 +156,15 @@ def _account(provider, tok):
                                      headers={"Authorization": f"Bearer {tok['access_token']}"})
         with urllib.request.urlopen(req, timeout=30) as r:
             return json.loads(r.read()).get("email") or "Google account"
+    if provider == "readai":
+        try:
+            req = urllib.request.Request("https://authn.read.ai/userinfo",
+                                         headers={"Authorization": f"Bearer {tok['access_token']}"})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                info = json.loads(r.read())
+            return info.get("email") or info.get("username") or "Read AI account"
+        except Exception:  # noqa: BLE001 — the label is cosmetic
+            return "Read AI account"
     owner = ((tok.get("owner") or {}).get("user") or {})
     who = (owner.get("person") or {}).get("email") or owner.get("name") or "Notion user"
     return f"{who} · {tok.get('workspace_name') or 'workspace'}"
@@ -141,9 +178,9 @@ def _fernet():
     return Fernet(key.encode())
 
 
-def finish(conn, provider, user, code):
+def finish(conn, provider, user, code, state=None):
     """Exchange the code, identify the account, store the tokens encrypted. Returns the account label."""
-    tok = _exchange(provider, code)
+    tok = _exchange(provider, code, state)
     if not tok.get("access_token"):
         raise RuntimeError(f"{provider} returned no access token")
     account = _account(provider, tok)
@@ -168,29 +205,56 @@ def get_row(conn, user, provider):
                         (user, provider)).fetchone()
 
 
+REFRESHABLE = {"google", "readai"}
+
+
 def token(conn, user, provider):
-    """A valid access token for this person's account, refreshing Google tokens when needed."""
+    """A valid access token for this account, refreshing it when it has expired.
+
+    Read AI access tokens last 10 minutes and its refresh tokens rotate on every use, so the
+    refresh runs under a row lock and the new refresh token is saved in the same transaction."""
     if not user:
         raise NotConnected("I can only use a connected account when its owner is the one asking.")
     row = get_row(conn, user, provider)
     if not row:
+        if user == AGENCY:
+            raise NotConnected(f"The agency's {PROVIDERS[provider]['label']} isn't connected yet. An owner can "
+                               f"ask Agency Bot to 'connect {provider} for the agency'.")
         raise NotConnected(f"You haven't connected {PROVIDERS[provider]['label']} yet. "
                            f"Ask me to 'connect my {provider}' and I'll DM you a sign-in link.")
     f = _fernet()
-    if provider == "google" and row["expires_at"] and row["expires_at"].timestamp() < time.time():
-        if not row["refresh_enc"]:
-            raise NotConnected("Your Google connection expired. Ask me to 'connect my google' again.")
-        p = PROVIDERS["google"]
+    expired = row["expires_at"] and row["expires_at"].timestamp() < time.time()
+    if provider not in REFRESHABLE or not expired:
+        return f.decrypt(row["access_enc"].encode()).decode()
+    conn.commit()                                  # start a clean transaction for the lock
+    row = conn.execute("SELECT * FROM user_connections WHERE slack_user = %s AND provider = %s FOR UPDATE",
+                       (user, provider)).fetchone()
+    if row["expires_at"] and row["expires_at"].timestamp() >= time.time():
+        conn.commit()                              # someone else refreshed while we waited
+        return f.decrypt(row["access_enc"].encode()).decode()
+    if not row["refresh_enc"]:
+        conn.rollback()
+        raise NotConnected(f"The {provider} connection expired. Ask me to 'connect my {provider}' again.")
+    p = PROVIDERS[provider]
+    try:
         tok = _post(p["token_url"], {"client_id": env(p["id_env"]), "client_secret": env(p["secret_env"]),
                                      "refresh_token": f.decrypt(row["refresh_enc"].encode()).decode(),
                                      "grant_type": "refresh_token"})
-        conn.execute("UPDATE user_connections SET access_enc = %s, expires_at = to_timestamp(%s) "
-                     "WHERE slack_user = %s AND provider = 'google'",
-                     (f.encrypt(tok["access_token"].encode()).decode(),
-                      int(time.time()) + int(tok.get("expires_in", 3600)) - 60, user))
-        conn.commit()
-        return tok["access_token"]
-    return f.decrypt(row["access_enc"].encode()).decode()
+    except RuntimeError as e:
+        conn.rollback()
+        if "invalid_grant" in str(e):
+            raise NotConnected(f"The {provider} connection was revoked or expired. "
+                               f"Ask me to 'connect my {provider}' again.") from None
+        raise
+    new_refresh = tok.get("refresh_token")
+    conn.execute("UPDATE user_connections SET access_enc = %s, expires_at = to_timestamp(%s)"
+                 + (", refresh_enc = %s" if new_refresh else "")
+                 + " WHERE slack_user = %s AND provider = %s",
+                 (f.encrypt(tok["access_token"].encode()).decode(),
+                  int(time.time()) + int(tok.get("expires_in", 3600)) - 60,
+                  *([f.encrypt(new_refresh.encode()).decode()] if new_refresh else []), user, provider))
+    conn.commit()
+    return tok["access_token"]
 
 
 def listing(conn, user):

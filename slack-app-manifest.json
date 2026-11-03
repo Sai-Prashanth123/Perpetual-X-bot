@@ -1,6 +1,6 @@
 {
     "display_information": {
-        "name": "Perpetual X",
+        "name": "Agency Bot",
         "description": "Your agency AI: client X strategy, content, research and team ops, all in Slack.",
         "background_color": "#9967B8"
     },
@@ -12,7 +12,7 @@
             "agent_tasks_enabled": true
         },
         "bot_user": {
-            "display_name": "Perpetual X",
+            "display_name": "Agency Bot",
             "always_online": true
         },
         "slash_commands": [
@@ -302,7 +302,7 @@
             }
         ],
         "agent_view": {
-            "agent_description": "Chat with Perpetual in Slack Messages.",
+            "agent_description": "Chat with Agency Bot in Slack Messages.",
             "suggested_prompts": []
         }
     },

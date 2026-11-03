@@ -323,3 +323,40 @@ CREATE TABLE IF NOT EXISTS hook_library (
 );
 CREATE INDEX IF NOT EXISTS hook_library_client_niche ON hook_library (client, niche);
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS trend_enabled BOOLEAN NOT NULL DEFAULT true;
+
+-- v9: team tasks + meeting follow-up (Read AI).
+CREATE TABLE IF NOT EXISTS team_tasks (
+    id           SERIAL PRIMARY KEY,
+    title        TEXT NOT NULL,
+    owner_slack  TEXT,
+    owner_name   TEXT,
+    client       TEXT,
+    due          DATE,
+    status       TEXT NOT NULL DEFAULT 'open',        -- open | doing | blocked | done | dropped
+    source       TEXT NOT NULL DEFAULT 'manual',      -- manual | meeting | standup
+    source_ref   TEXT,
+    notes        TEXT,
+    created_by   TEXT,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    done_at      TIMESTAMPTZ,
+    reminded_on  DATE
+);
+CREATE INDEX IF NOT EXISTS team_tasks_owner ON team_tasks(owner_slack, status);
+CREATE TABLE IF NOT EXISTS meetings (
+    id            TEXT PRIMARY KEY,                   -- readai:<id>
+    source        TEXT NOT NULL,
+    title         TEXT,
+    started_at    TIMESTAMPTZ,
+    ended_at      TIMESTAMPTZ,
+    participants  JSONB,
+    summary       TEXT,
+    action_items  JSONB,
+    key_questions JSONB,
+    url           TEXT,
+    client        TEXT,
+    fetched_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    processed_at  TIMESTAMPTZ,
+    tasks_created INT,
+    note          TEXT
+);

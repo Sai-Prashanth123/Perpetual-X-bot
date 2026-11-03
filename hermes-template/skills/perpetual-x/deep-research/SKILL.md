@@ -56,6 +56,6 @@ Run `research_memory` with action=add, one entry per thread (kind: performance /
 niche / growth), each with its sources. Note any hypothesis worth testing for `playbook`.
 
 ## 4. Deliver
-- **Asked by a person (or Perpetual):** run `publish_document` (kind `research`) with the research
+- **Asked by a person (or Agency Bot):** run `publish_document` (kind `research`) with the research
   template from `doc-templates`. Pass `asked_by_slack` and `dm_to` when you have them.
 - **Scheduled run:** save to memory only, then reply exactly `[SILENT]`.

@@ -1,4 +1,4 @@
-"""perpetual — the Perpetual X Bot plugin (one client per Hermes profile).
+"""perpetual — the Agency Bot Bot plugin (one client per Hermes profile).
 
 Toolsets:
   xconsole  read-only X data from the Thought Pilot scraping console (console.py)
@@ -448,7 +448,7 @@ LEDGER_TOOLS = [
       "slots": {"type": "array", "items": {"type": "object"}}, "codes": {"type": "array", "items": _STR},
       "days": _INT}, []),
     ("agency_requests_take", agency_requests_take,
-     "Take this client's pending requests (handed over by Perpetual or a teammate's agent). Each comes "
+     "Take this client's pending requests (handed over by Agency Bot or a teammate's agent). Each comes "
      "with by_name and requester_slack: pass requester_slack as asked_by_slack and in dm_to when you "
      "publish the result. Each request is returned once; handle every one.",
      {},
@@ -474,9 +474,10 @@ _CTX = {}
 def register(ctx):
     _CTX["ctx"] = ctx
     console.register(ctx, toolset="xconsole")
-    from perpetual_core import guard, hooks, media, swipe, workspace
+    from perpetual_core import guard, hooks, media, swipe, tasks, workspace
     guard.register(ctx)          # power tools: owners only; secrets: never
     workspace.register(ctx)
+    tasks.register(ctx)          # team tasks: 'add a task for Shravya: …', 'done TASK-4'
     hooks.register(ctx)          # hook research + hook library (content studio)
     swipe.register(ctx)          # competitor swipe file
     media.register(ctx)          # quote cards, carousels, voice briefs          # the asking person's own Google / Notion, if they connected it

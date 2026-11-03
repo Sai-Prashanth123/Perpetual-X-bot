@@ -8,6 +8,8 @@
     python -m perpetual_core.jobs calendar-due <client>         # reminders for approved calendar slots
     python -m perpetual_core.jobs console-replies <client>      # import the console reply agent's drafts
     python -m perpetual_core.jobs apply-changes <user_id> <summary>   # background setup + DM receipts
+    python -m perpetual_core.jobs meetings-pending              # cron monitor: finished meetings to follow up
+    python -m perpetual_core.jobs tasks-remind                  # DM owners what's due today / overdue
 
 Cron scripts run as plain subprocesses, outside any profile's secret scope, so shared
 settings are read from the file the boot reconciler writes (PERPETUAL_SHARED_ENV).
@@ -61,6 +63,22 @@ def main(argv):
             # One model-free scan of every client's niche; hits become trend requests for that agent.
             from . import trends
             trends.scan(conn)
+        elif cmd == "meetings-pending":
+            # Monitor script: pulls finished meetings from the agency's Read AI, prints the ones waiting
+            # for follow-up. Not connected / Read AI down → print nothing (no agent run, no noise).
+            from . import connections, meetings, readai
+            try:
+                meetings.sync(conn)
+            except connections.NotConnected:
+                return 0
+            except readai.ReadAIError as e:
+                print(f"skipped {cmd}: {e}", file=sys.stderr)
+            for r in meetings.pending(conn):
+                n = len(r["action_items"] or [])
+                print(f"meeting {r['id']} '{r['title']}' at {r['started_at']:%Y-%m-%d %H:%M}: {n} action item(s)")
+        elif cmd == "tasks-remind":
+            from . import tasks
+            tasks.send_reminders(conn)                 # DMs only; stdout stays empty
         elif cmd == "postmortem-pending":
             # Monitor script: prints the posts that need a verdict; unchanged output = no agent run.
             from . import postmortem
@@ -108,7 +126,7 @@ def _gateway_pid():
 
 def apply_changes(user_id, summary):
     """Run the reconciler, DM the result, restart the gateway (new channel routes are read at start),
-    then DM again once Perpetual is back. Started detached by Perpetual's tools so chat never blocks."""
+    then DM again once Agency Bot is back. Started detached by Agency Bot's tools so chat never blocks."""
     import json
     import subprocess
     import time

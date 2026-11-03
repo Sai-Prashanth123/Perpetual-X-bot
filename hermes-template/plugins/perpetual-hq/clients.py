@@ -42,10 +42,10 @@ def _resolve_channel(given, handle):
         else:
             info = _find_channel_by_name(ref)
             if not info:
-                raise ValueError(f"I can't see a channel called #{ref}. Invite me to it first (/invite @Perpetual X).")
+                raise ValueError(f"I can't see a channel called #{ref}. Invite me to it first (/invite @Agency Bot).")
         if not info.get("is_member"):
             if info.get("is_private"):
-                raise ValueError(f"#{info['name']} is private and I'm not in it. Type /invite @Perpetual X there first.")
+                raise ValueError(f"#{info['name']} is private and I'm not in it. Type /invite @Agency Bot there first.")
             slackui.slack("conversations.join", channel=info["id"])
         return info["id"], info["name"], False
     name = _channel_name(handle)
@@ -88,7 +88,7 @@ def apply_changes(summary):
 
     The reconciler can take minutes on a small server (it registers each client's schedule), so it
     never runs inside the chat turn: a detached job runs it, DMs "✅ set up", restarts the gateway
-    (channel routes are read at start) and DMs "🟢 back" once Perpetual is live again."""
+    (channel routes are read at start) and DMs "🟢 back" once Agency Bot is live again."""
     subprocess.Popen(
         ["/opt/hermes/.venv/bin/python", "-m", "perpetual_core.jobs", "apply-changes", _requester() or "", summary],
         env={**os.environ, "PYTHONPATH": "/opt/perpetual/pylib"},
@@ -202,7 +202,7 @@ def run_package(conn, p):
     who = _requester()
     for c in targets:
         agency.add_request(conn, c["handle"], "Produce your weekly content package now: follow weekly-package.",
-                           by=slackui.person_name(who) if who else "Perpetual", requester_slack=who)
+                           by=slackui.person_name(who) if who else "Agency Bot", requester_slack=who)
         if who:
             conn.execute("UPDATE clients SET added_by = COALESCE(added_by, %s) WHERE handle = %s", (who, c["handle"]))
     conn.commit()

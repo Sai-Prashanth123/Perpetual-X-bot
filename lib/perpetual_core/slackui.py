@@ -1,4 +1,4 @@
-"""Everything the team sees in Slack: suggestion cards with buttons, the Perpetual X Home tab
+"""Everything the team sees in Slack: suggestion cards with buttons, the Agency Bot Home tab
 (the agency dashboard), and the pop-up modals. Pure Block Kit builders plus a tiny Web API client;
 the Hermes plugins wire them to Slack events.
 """
@@ -67,7 +67,8 @@ def people():
                 break
         _people_cache["people"] = [
             {"id": m["id"], "name": m.get("name"), "real_name": m.get("real_name") or "",
-             "display_name": (m.get("profile") or {}).get("display_name") or ""}
+             "display_name": (m.get("profile") or {}).get("display_name") or "",
+             "email": (m.get("profile") or {}).get("email") or ""}
             for m in members if not m.get("is_bot") and not m.get("deleted") and m["id"] != "USLACKBOT"]
         _people_cache["at"] = time.time()
     return _people_cache["people"]
@@ -368,7 +369,7 @@ def home_view(data, days, spark, viral, learning, playbook_version, clients_for_
     rows = data["clients"]
     tot = {k: sum((c[k] or 0) for c in rows) for k in ("views", "likes", "posts", "bookmarks")}
     foll = sum((c["followers_change"] or 0) for c in rows)
-    b = [{"type": "header", "text": {"type": "plain_text", "text": "Perpetual X — agency dashboard"}},
+    b = [{"type": "header", "text": {"type": "plain_text", "text": "Agency Bot — agency dashboard"}},
          {"type": "actions", "block_id": "px_window", "elements": [
              {"type": "button", "action_id": f"px_home_{d}", "value": str(d),
               "text": {"type": "plain_text", "text": f"{'Today' if d == 1 else f'{d} days'}"},
@@ -382,12 +383,12 @@ def home_view(data, days, spark, viral, learning, playbook_version, clients_for_
              {"type": "mrkdwn", "text": f"*Posts*\n{tot['posts']}"}]},
          {"type": "context", "elements": [{"type": "mrkdwn", "text":
              f"Last {days} {'day' if days == 1 else 'days'} across {len(rows)} client(s), ranked by views. "
-             "Ask Perpetual in a DM for anything else."}]},
+             "Ask Agency Bot in a DM for anything else."}]},
          {"type": "divider"},
          {"type": "header", "text": {"type": "plain_text", "text": "Leaderboard"}}]
     if not rows:
         b.append({"type": "section", "text": {"type": "mrkdwn", "text":
-                  "No clients yet. DM Perpetual: _add client @handle, run by <name>, niche <topics>_."}})
+                  "No clients yet. DM Agency Bot: _add client @handle, run by <name>, niche <topics>_."}})
     for i, c in enumerate(rows[:20], 1):
         sug = c["suggestions"]
         flags = "  ".join(f"⚠️ {f}" for f in c["flags"]) or "✅ All good"

@@ -20,12 +20,12 @@ def _requester():
 
 def _person(user_id):
     if not user_id:
-        return "Perpetual"
+        return "Agency Bot"
     try:
         from perpetual_core import slackui
-        return slackui.person_name(user_id) or "Perpetual"
+        return slackui.person_name(user_id) or "Agency Bot"
     except Exception:  # noqa: BLE001 — Slack unreachable or not configured
-        return "Perpetual"
+        return "Agency Bot"
 
 
 def queue_studio(conn, p, who=None):

@@ -1,4 +1,4 @@
-"""perpetual-hq — the Main X agent (the default Hermes profile, Perpetual X in Slack DMs).
+"""perpetual-hq — the Main X agent (the default Hermes profile, Agency Bot in Slack DMs).
 
 * Agency tools: scorecards, team activity, viral feed, learning, the shared agency playbook.
 * Client management by chat: add / update / remove / list clients (clients.py).
@@ -111,7 +111,7 @@ def delegate_to_client(conn, p):
         raise ValueError(f"@{handle} has no channel yet, so its agent isn't running. "
                          "Create it first (client_channels), then ask again.")
     requester = clients._requester()
-    rid = agency.add_request(conn, handle, p["request"], by=p.get("by") or "Perpetual", requester_slack=requester)
+    rid = agency.add_request(conn, handle, p["request"], by=p.get("by") or "Agency Bot", requester_slack=requester)
     return _ok(request_id=rid, channel=row["slack_channel"],
                note=(f"@{handle}'s agent picks this up within ~2 minutes and publishes the result as a document "
                      f"in <#{row['slack_channel']}>; the requester gets the link by DM. Tell them that in one line; "
@@ -213,9 +213,11 @@ def handle_post(raw_args, source=None, **_):
 
 
 def register(ctx):
-    from perpetual_core import guard, workspace
+    from perpetual_core import guard, meetings, tasks, workspace
     guard.register(ctx)          # power tools: owners only; secrets: never
     workspace.register(ctx)
+    tasks.register(ctx)          # team tasks (chat, meetings, standups)
+    meetings.register(ctx)       # meeting follow-up from the agency's Read AI
     from . import studio_hq
     studio_hq.register(ctx)      # run_studio: content for one or all clients
     console.register(ctx, toolset="xconsole")

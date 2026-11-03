@@ -1,7 +1,7 @@
 """Boot-time reconciler for the agency bot (runs as the hermes user before the gateway starts).
 
 The clients table in Postgres is the source of truth (clients are added by chatting with
-Perpetual; clients.yaml is only an optional seed). On every boot — and again, with
+Agency Bot; clients.yaml is only an optional seed). On every boot — and again, with
 --from-runtime, whenever a client is added or changed by chat — this:
   * applies the database schema and syncs the client roster into Postgres,
   * sets up the default profile as the HQ agent (#hq) holding the one shared Slack bot,
@@ -222,6 +222,7 @@ def main(runtime=False):
         # Teammates' own Google / Notion connections (tokens refresh inside the bot).
         "GOOGLE_CLIENT_ID": env("GOOGLE_CLIENT_ID"), "GOOGLE_CLIENT_SECRET": env("GOOGLE_CLIENT_SECRET"),
         "NOTION_CLIENT_ID": env("NOTION_CLIENT_ID"), "NOTION_CLIENT_SECRET": env("NOTION_CLIENT_SECRET"),
+        "READAI_CLIENT_ID": env("READAI_CLIENT_ID"), "READAI_CLIENT_SECRET": env("READAI_CLIENT_SECRET"),
     }
     model = env("PX_MODEL", "claude-sonnet-5-5")
     learn_model = env("PX_LEARN_MODEL", "claude-opus-5-5")
@@ -234,7 +235,9 @@ def main(runtime=False):
 
     # Scripts run outside any profile scope; give them the shared settings.
     shared_env = DATA / "perpetual-shared.env"
-    script_env = {k: shared.get(k) for k in ("DATABASE_URL", "XCONSOLE_API_KEY", "XCONSOLE_URL", "OWNER_SLACK_IDS")}
+    script_env = {k: shared.get(k) for k in ("DATABASE_URL", "XCONSOLE_API_KEY", "XCONSOLE_URL", "OWNER_SLACK_IDS",
+                                             # meeting follow-up reads the agency's Read AI (encrypted token)
+                                             "TOKEN_ENCRYPTION_KEY", "READAI_CLIENT_ID", "READAI_CLIENT_SECRET")}
     script_env["SLACK_BOT_TOKEN"] = env("SLACK_BOT_TOKEN")      # jobs that DM receipts
     shared_env.write_text("".join(f"{k}={v}\n" for k, v in script_env.items() if v))
     shared_env.chmod(0o600)
@@ -344,7 +347,7 @@ def main(runtime=False):
             hermes("cron", "remove", "px-intro", profile=slug, check=False)
             hermes("cron", "create", "2m",
                    "Post a short hello in this channel (plain message, no document): you are the dedicated X "
-                   "strategist for this client only; you answer when asked here (or when Perpetual hands you "
+                   "strategist for this client only; you answer when asked here (or when Agency Bot hands you "
                    "work) and otherwise send only a daily brief each morning and a weekly report on Mondays; "
                    "every answer arrives as one document with a short summary, never a pile of cards; you "
                    "research the client every few days (their numbers, competitors, the niche on the web). "
@@ -388,6 +391,8 @@ def main(runtime=False):
     write_script(DATA, "px_viral.py", ["snapshot-viral"])
     write_script(DATA, "px_radar.py", ["radar-scan"])
     write_script(DATA, "px_trends.py", ["trend-scan"])
+    write_script(DATA, "px_meetings.py", ["meetings-pending"])
+    write_script(DATA, "px_tasks.py", ["tasks-remind"])
     # The bot converses only in client channels (and DMs, which Slack never gates). The report
     # channel is deliberately left out, so messages there are ignored. An empty allowlist would
     # mean "every channel", hence the placeholder while there are no clients yet.
@@ -482,7 +487,7 @@ metadata:
     tags: [perpetual-x, config]
 ---
 
-# Client brief — generated from the client's settings (change them by asking Perpetual, not here)
+# Client brief — generated from the client's settings (change them by asking Agency Bot, not here)
 
 - **Client:** {name} (@{handle})
 - **Niche topics:** {show(c.get('niche_topics'), 'not set — infer from their posts')}
@@ -510,7 +515,7 @@ def minute_offset(handle):
 
 
 def client_jobs(deliver, learn_model, offset=0):
-    """Client agents work on demand. Unasked, they only: pick up hand-offs from Perpetual (a model-free
+    """Client agents work on demand. Unasked, they only: pick up hand-offs from Agency Bot (a model-free
     check every 2 minutes), research their client (silently, 3 nights a week), send one daily brief,
     a weekly report, and run the weekly learning review (silent)."""
     common = ["--deliver", deliver, "--failure-deliver", deliver]
@@ -522,7 +527,7 @@ def client_jobs(deliver, learn_model, offset=0):
     deep = ["--provider", "anthropic", "--model", learn_model, "--reasoning-effort", "high"]
     return [
         {"name": "px-requests", "schedule": "every 2m",
-         "prompt": "Work was handed to you (by Perpetual or a teammate's agent): follow agency-requests.",
+         "prompt": "Work was handed to you (by Agency Bot or a teammate's agent): follow agency-requests.",
          "args": common + skill_args(*base, "agency-requests", "reply-pack", "deep-research", "weekly-package",
                                      *formats, "tweet-ideas", "reply-hunter", "quote-hunter", "radar-reply",
                                      "lead-finder", "content-calendar", "post-mortem", "trend-jack", "repurpose",
@@ -570,6 +575,13 @@ def hq_jobs(deliver, learn_model):
         # Trend-jacking: niche posts taking off right now become drafts within minutes.
         {"name": "px-trends", "schedule": "5,35 7-22 * * *", "prompt": "",
          "args": ["--deliver", deliver, "--no-agent", "--script", "px_trends.py"]},
+        # Meetings → tasks: finished calls from the agency's Read AI (model runs only when there's one).
+        {"name": "px-meetings", "schedule": "*/20 7-22 * * *",
+         "prompt": "A meeting finished: follow meeting-followup.",
+         "args": common + skill_args("meeting-followup") + ["--monitor-script", "px_meetings.py"]},
+        # Morning DM to each owner: tasks due today or overdue (model-free).
+        {"name": "px-tasks", "schedule": "30 8 * * 1-5", "prompt": "",
+         "args": ["--deliver", deliver, "--no-agent", "--script", "px_tasks.py"]},
         {"name": "px-digest", "schedule": "0 9 * * *",
          "prompt": "Daily agency digest: follow agency-digest.",
          "args": common + skill_args("agency-digest")},

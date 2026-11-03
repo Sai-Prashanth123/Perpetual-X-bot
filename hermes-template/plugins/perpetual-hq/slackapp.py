@@ -1,5 +1,5 @@
 """Slack interactivity for the whole agency: suggestion-card buttons, edit/reject pop-ups, the
-Perpetual X Home tab (the dashboard) and the client details pop-up.
+Agency Bot Home tab (the dashboard) and the client details pop-up.
 
 These live in the HQ plugin because the default profile owns the one Slack connection; card
 buttons carry the client handle in their value, so one set of handlers serves every client.
@@ -290,4 +290,4 @@ def slack_factory(app, adapter):
     app.view("px_edit_submit")(on_edit_submit)
     app.view("px_reject_submit")(on_reject_submit)
     app.view("px_article_posted_submit")(on_article_posted_submit)
-    log.info("Perpetual X: Slack Home tab, modals and %d card actions wired", len(ACTIONS))
+    log.info("Agency Bot: Slack Home tab, modals and %d card actions wired", len(ACTIONS))

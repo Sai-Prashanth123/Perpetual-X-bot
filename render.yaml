@@ -38,3 +38,7 @@ services:
         sync: false
       - key: NOTION_CLIENT_SECRET
         sync: false
+      - key: READAI_CLIENT_ID
+        sync: false
+      - key: READAI_CLIENT_SECRET
+        sync: false

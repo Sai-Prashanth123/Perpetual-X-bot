@@ -46,7 +46,7 @@ def test_named(conn):
     check(len(r) == 1 and r[0]["kind"] == "studio", "one agency_request with kind 'studio'")
     check(r[0]["request"] == "Follow content-studio: write 2 thread about cold email reply rates. Publish one document.",
           "request text tells the agent to follow content-studio")
-    check(r[0]["by_name"] == "Perpetual" and r[0]["requester_slack"] is None, "no session: by Perpetual, no requester")
+    check(r[0]["by_name"] == "Agency Bot" and r[0]["requester_slack"] is None, "no session: by Agency Bot, no requester")
     check(rows(conn, B) == [], "nothing queued for the channel-less client")
 
 
