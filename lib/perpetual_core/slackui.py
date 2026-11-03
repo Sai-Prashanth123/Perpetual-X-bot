@@ -15,7 +15,7 @@ from urllib.parse import urlencode
 from .settings import env
 
 KIND_LABEL = {"article": "X Article", "long_tweet": "Long tweet", "qrt_promo": "Article promo QRT",
-              "video_qrt": "Video QRT", "tweet": "Tweet", "thread": "Thread", "reply": "Reply", "quote": "Quote tweet",
+              "video_qrt": "Video QRT", "linkedin": "LinkedIn post", "newsletter": "Newsletter blurb", "tweet": "Tweet", "thread": "Thread", "reply": "Reply", "quote": "Quote tweet",
               "repost": "Repost", "engage": "Reply to an engager"}
 STATUS_LABEL = {"pending": "Waiting for review", "approved": "Approved", "edited": "Edited",
                 "rejected": "Rejected", "posted": "Posted", "expired": "Expired (not used in 4 days)"}

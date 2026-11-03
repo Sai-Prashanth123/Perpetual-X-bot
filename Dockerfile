@@ -7,7 +7,10 @@ USER root
 COPY --from=ghcr.io/astral-sh/uv:0.9.5 /uv /usr/local/bin/uv
 # Our Python deps and shared code live beside Hermes' venv, never inside it.
 RUN uv pip install --quiet --python /opt/hermes/.venv/bin/python --target /opt/perpetual/pylib \
-        "psycopg[binary]>=3.2,<4"
+        "psycopg[binary]>=3.2,<4" "Pillow>=10.1" "edge-tts>=6.1"
+# Quote cards and carousels need real fonts.
+RUN (apt-get update -qq && apt-get install -y -qq --no-install-recommends fonts-dejavu-core \
+     && rm -rf /var/lib/apt/lists/*) || echo "fonts-dejavu-core not installed; media falls back to the default font"
 COPY lib/perpetual_core/ /opt/perpetual/pylib/perpetual_core/
 COPY hermes-template/ /opt/perpetual/hermes-template/
 COPY CRON_VERSION clients.yaml docker/reconcile.py /opt/perpetual/

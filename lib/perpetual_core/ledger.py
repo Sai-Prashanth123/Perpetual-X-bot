@@ -15,13 +15,14 @@ from urllib.parse import urlencode
 from .settings import env
 
 PREFIX = {"tweet": "T", "reply": "R", "quote": "Q", "thread": "H", "engage": "E", "repost": "P",
-          "article": "A", "long_tweet": "L", "qrt_promo": "B", "video_qrt": "V"}
+          "article": "A", "long_tweet": "L", "qrt_promo": "B", "video_qrt": "V",
+          "linkedin": "K", "newsletter": "N"}
 # What the X API lets us post on the client's behalf (Feb 2026 rules): original posts,
 # threads, and replies to people who engaged with the client. Everything else gets an
 # "Open in X" intent link the employee taps.
 API_POSTABLE = {"tweet", "thread", "engage", "long_tweet"}
 # X Articles have no API or compose link; promo and video QRTs quote another post / need a clip.
-NO_INTENT = {"article"}
+NO_INTENT = {"article", "linkedin", "newsletter"}
 MATCH_THRESHOLD = 0.62      # text similarity above which a real post counts as "used this suggestion"
 THREAD_BREAK = re.compile(r"\n\s*---\s*\n")
 SCHEMA_FILE = Path(__file__).with_name("schema.sql")

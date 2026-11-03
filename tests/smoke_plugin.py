@@ -31,6 +31,10 @@ class FakeCtx:
     def register_command(self, name, handler, **_):
         self.commands[name] = handler
 
+    def register_hook(self, name, callback):
+        self.hooks = getattr(self, "hooks", {})
+        self.hooks.setdefault(name, []).append(callback)
+
 
 def load():
     spec = importlib.util.spec_from_file_location("perpetual", PLUGIN / "__init__.py",

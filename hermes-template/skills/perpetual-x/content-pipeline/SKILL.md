@@ -10,6 +10,10 @@ metadata:
 
 # Content pipeline (human-grade, fact-checked, referenced)
 
+**For any new piece of writing, run `content-studio`** (researcher + hook hunter + strategist, 3 writers,
+critics, editor). It uses every check below. Use this pipeline alone only for quick edits of an
+existing draft.
+
 Nothing reaches the team unless it clears this. If a draft can't clear it in 3 passes, don't ship
 it: say what blocked it (in one line) instead.
 

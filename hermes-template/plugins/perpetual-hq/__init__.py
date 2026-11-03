@@ -216,6 +216,8 @@ def register(ctx):
     from perpetual_core import guard, workspace
     guard.register(ctx)          # power tools: owners only; secrets: never
     workspace.register(ctx)
+    from . import studio_hq
+    studio_hq.register(ctx)      # run_studio: content for one or all clients
     console.register(ctx, toolset="xconsole")
     for name, fn, description, props, required in HQ_TOOLS:
         ctx.register_tool(

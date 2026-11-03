@@ -57,6 +57,10 @@ def main(argv):
             # One model-free scan for every client; each hit becomes a request for that client's agent.
             from . import radar
             radar.scan(conn)
+        elif cmd == "trend-scan":
+            # One model-free scan of every client's niche; hits become trend requests for that agent.
+            from . import trends
+            trends.scan(conn)
         elif cmd == "postmortem-pending":
             # Monitor script: prints the posts that need a verdict; unchanged output = no agent run.
             from . import postmortem

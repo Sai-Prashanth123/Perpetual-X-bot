@@ -474,9 +474,12 @@ _CTX = {}
 def register(ctx):
     _CTX["ctx"] = ctx
     console.register(ctx, toolset="xconsole")
-    from perpetual_core import guard, workspace
+    from perpetual_core import guard, hooks, media, swipe, workspace
     guard.register(ctx)          # power tools: owners only; secrets: never
-    workspace.register(ctx)          # the asking person's own Google / Notion, if they connected it
+    workspace.register(ctx)
+    hooks.register(ctx)          # hook research + hook library (content studio)
+    swipe.register(ctx)          # competitor swipe file
+    media.register(ctx)          # quote cards, carousels, voice briefs          # the asking person's own Google / Notion, if they connected it
     for name, fn, description, props, required in LEDGER_TOOLS:
         ctx.register_tool(
             name=name,

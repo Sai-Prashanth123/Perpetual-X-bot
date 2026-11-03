@@ -18,6 +18,9 @@ metadata:
    - "write a promo QRT for … article A3" → `article-qrt` with the parent fields
    - a topic → `tweet-ideas`
    - a request starting "RADAR" (kind radar) → `radar-reply` (fast; it sends its own alert, no document)
+   - a request starting "TREND" (kind trend) → `trend-jack` (fast; it sends its own alert, no document)
+   - "Follow content-studio: …" (kind studio) → `content-studio`, then one document
+   - "repurpose …" → `repurpose`; "swipe file" → `swipe-file`
    - "find leads", "who in my comments could buy?" → `lead-finder`
    - "plan next week", "make a content calendar" → `content-calendar`
    - "why did my post flop / win?" → `post-mortem` on that post (`postmortems` action recent first)

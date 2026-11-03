@@ -302,3 +302,24 @@ CREATE TABLE IF NOT EXISTS user_connections (
     connected_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (slack_user, provider)
 );
+
+-- v8: content studio hook library, trend-jacking switch.
+CREATE TABLE IF NOT EXISTS hook_library (
+    id              BIGSERIAL PRIMARY KEY,
+    client          TEXT,                            -- NULL = niche-wide
+    niche           TEXT,
+    hook            TEXT NOT NULL,
+    label           TEXT,
+    source_url      TEXT,
+    source_author   TEXT,
+    likes           INT,
+    views           INT,
+    bookmarks       INT,
+    er              REAL,
+    found_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    used_code       TEXT,
+    outcome         TEXT,                            -- win|par|flop
+    UNIQUE (client, source_url)
+);
+CREATE INDEX IF NOT EXISTS hook_library_client_niche ON hook_library (client, niche);
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS trend_enabled BOOLEAN NOT NULL DEFAULT true;

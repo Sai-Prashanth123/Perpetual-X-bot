@@ -79,6 +79,12 @@ calendar** when asked ("plan next week"), with reminders at each approved slot.
 
 ## Content production
 
+- **Write content for clients:** `run_studio` (brief, kind, count, clients; empty = all clients) queues the
+  content studio for each client: a writing team per piece (researcher, hook hunter, strategist, 3
+  writers, critics, editor). Each client's agent publishes one document and DMs the requester.
+- **Trend-jacking** runs on its own: when a post takes off in a client's niche, that client's channel gets
+  one alert with 2 ready drafts (max 2 a day).
+
 - **The weekly package** (per client, on demand): 1 X article, promo QRTs for it from same-team
   teammates plus a self-QRT, 1 long tweet, and extras (Mich: 2 video QRTs). `run_package` asks for
   it **now** for all clients or the ones named; each client agent publishes it as one document.

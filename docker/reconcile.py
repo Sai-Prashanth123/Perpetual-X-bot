@@ -324,6 +324,8 @@ def main(runtime=False):
             "plugins.enabled": ["perpetual"], "skills.external_dirs": [str(SHARED_SKILLS)],
             # One client, thought about deeply: high reasoning, and the web through Tavily.
             "agent.reasoning_effort": "high", "web.backend": "tavily",
+            # The content studio runs a writing team per piece; keep the 1 GB server safe.
+            "delegation.max_concurrent_children": int(env("PX_MAX_PARALLEL_AGENTS", "3")),
         })
         deliver = f"slack:{channel}"
         routes.append({"name": f"x-{slug}", "platform": "slack", "chat_id": str(channel), "profile": slug})
@@ -385,6 +387,7 @@ def main(runtime=False):
     write_script(DATA, "px_metrics.py", ["snapshot-metrics"])
     write_script(DATA, "px_viral.py", ["snapshot-viral"])
     write_script(DATA, "px_radar.py", ["radar-scan"])
+    write_script(DATA, "px_trends.py", ["trend-scan"])
     # The bot converses only in client channels (and DMs, which Slack never gates). The report
     # channel is deliberately left out, so messages there are ignored. An empty allowlist would
     # mean "every channel", hence the placeholder while there are no clients yet.
@@ -511,7 +514,8 @@ def client_jobs(deliver, learn_model, offset=0):
     check every 2 minutes), research their client (silently, 3 nights a week), send one daily brief,
     a weekly report, and run the weekly learning review (silent)."""
     common = ["--deliver", deliver, "--failure-deliver", deliver]
-    base = ["client-brief", "client-voice", "playbook", "agency-playbook", "content-pipeline", "doc-templates"]
+    base = ["client-brief", "client-voice", "playbook", "agency-playbook", "content-pipeline", "content-studio",
+            "doc-templates"]
     if (SHARED_SKILLS / "agency-writing-standards" / "SKILL.md").exists():
         base.append("agency-writing-standards")
     formats = ["x-article", "x-long-tweet", "article-qrt", "video-qrt"]
@@ -521,7 +525,8 @@ def client_jobs(deliver, learn_model, offset=0):
          "prompt": "Work was handed to you (by Perpetual or a teammate's agent): follow agency-requests.",
          "args": common + skill_args(*base, "agency-requests", "reply-pack", "deep-research", "weekly-package",
                                      *formats, "tweet-ideas", "reply-hunter", "quote-hunter", "radar-reply",
-                                     "lead-finder", "content-calendar", "post-mortem")
+                                     "lead-finder", "content-calendar", "post-mortem", "trend-jack", "repurpose",
+                                     "swipe-file")
                  + ["--monitor-script", "px_requests.py", "--reasoning-effort", "high"]},
         {"name": "px-research", "schedule": f"{offset} 2 * * 1,3,5",
          "prompt": "Scheduled research run: follow deep-research (save to research_memory, publish nothing), "
@@ -540,6 +545,9 @@ def client_jobs(deliver, learn_model, offset=0):
         {"name": "px-leads", "schedule": f"{offset} 10 * * 4",
          "prompt": "Weekly lead finder: follow lead-finder.",
          "args": common + skill_args("client-brief", "client-voice", "doc-templates", "lead-finder") + deep},
+        {"name": "px-swipe", "schedule": f"{offset} 9 * * 3",
+         "prompt": "Weekly competitor swipe file: follow swipe-file. Scheduled run.",
+         "args": common + skill_args(*base, "swipe-file") + deep},
         {"name": "px-slots", "schedule": "every 15m", "prompt": "",
          "args": ["--deliver", deliver, "--no-agent", "--script", "px_slots.py"]},
         {"name": "px-learn", "schedule": f"{offset} 22 * * 0",
@@ -559,6 +567,9 @@ def hq_jobs(deliver, learn_model):
         # Early-reply radar: one model-free scan for every client; hits become client requests.
         {"name": "px-radar", "schedule": "*/10 7-22 * * *", "prompt": "",
          "args": ["--deliver", deliver, "--no-agent", "--script", "px_radar.py"]},
+        # Trend-jacking: niche posts taking off right now become drafts within minutes.
+        {"name": "px-trends", "schedule": "5,35 7-22 * * *", "prompt": "",
+         "args": ["--deliver", deliver, "--no-agent", "--script", "px_trends.py"]},
         {"name": "px-digest", "schedule": "0 9 * * *",
          "prompt": "Daily agency digest: follow agency-digest.",
          "args": common + skill_args("agency-digest")},

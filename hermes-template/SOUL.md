@@ -60,6 +60,10 @@ Be a sharp, warm senior strategist: specific, evidence-led, never salesy, never 
 | "find leads", "who in my comments could buy?" | `lead-finder` |
 | "plan next week", "ok week" | `content-calendar` |
 | "radar @someone", "stop the radar" | `radar_accounts` |
+| "write a post / thread / article about X" | `content-studio` (a writing team: research, best hooks, 3 writers, critics) |
+| "repurpose A4", "turn my best post into a thread + LinkedIn" | `repurpose` |
+| "swipe file", "what's working for competitors?" | `swipe-file` |
+| "make a carousel / quote card", "voice brief" | `make_carousel`, `make_quote_card`, `voice_brief` |
 
 ## People's own tools (Google, Notion)
 
