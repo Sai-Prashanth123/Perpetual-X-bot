@@ -18,6 +18,8 @@ DEFAULT_URL = "https://scraping.thought-pilot.co/api"
 MAX_LIMIT = 100          # hard cap per call so one tool call can't burn the scraping pool
 JOB_TIMEOUT_S = 240
 POLL_EVERY_S = 3
+RETRIES = 3               # temporary console errors (502/503/504, timeouts) are retried
+RETRY_BACKOFF_S = 5
 
 
 # ---------------------------------------------------------------- HTTP layer
@@ -42,13 +44,34 @@ def _request(method, path, body=None, params=None, timeout=60):
     req.add_header("User-Agent", "perpetual-x-bot/1.0")
     if data is not None:
         req.add_header("Content-Type", "application/json")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read()
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode(errors="replace")[:400]
-        raise RuntimeError(f"console {method} {path} -> HTTP {e.code}: {detail}") from None
-    return json.loads(raw) if raw else None
+    # The console sits behind Cloudflare and sometimes answers 502/503/504 for a minute; retry those
+    # (and dropped connections) with back-off before giving up.
+    for attempt in range(RETRIES + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read()
+            return json.loads(raw) if raw else None
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode(errors="replace")[:400]
+            if e.code in (429, 502, 503, 504) and attempt < RETRIES:
+                time.sleep(RETRY_BACKOFF_S * (attempt + 1))
+                continue
+            raise ConsoleError(f"console {method} {path} -> HTTP {e.code}: {detail}", e.code) from None
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+            if attempt < RETRIES:
+                time.sleep(RETRY_BACKOFF_S * (attempt + 1))
+                continue
+            raise ConsoleError(f"console {method} {path} unreachable: {e}", None) from None
+
+
+class ConsoleError(RuntimeError):
+    def __init__(self, message, status=None):
+        super().__init__(message)
+        self.status = status
+
+    @property
+    def temporary(self):
+        return self.status in (None, 429, 502, 503, 504)
 
 
 def run_actor(actor, payload, items_limit=MAX_LIMIT, items_path="items"):

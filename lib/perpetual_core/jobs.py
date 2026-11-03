@@ -31,7 +31,7 @@ def _load_shared_env():
 
 def main(argv):
     _load_shared_env()
-    from . import agency, ledger
+    from . import agency, console, ledger
     if not argv:
         print(__doc__)
         return 2
@@ -80,6 +80,12 @@ def main(argv):
         else:
             print(f"unknown command {cmd}")
             return 2
+    except console.ConsoleError as e:
+        if not e.temporary:
+            raise
+        # The scraping console is briefly down: skip this round quietly (stdout would be posted to
+        # Slack, and a non-zero exit posts a failure); the next scheduled run tries again.
+        print(f"skipped {cmd}: {e}", file=sys.stderr)
     finally:
         conn.close()
     return 0
