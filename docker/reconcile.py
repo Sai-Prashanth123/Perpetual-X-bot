@@ -395,6 +395,9 @@ def main(runtime=False):
     write_script(DATA, "px_meetings.py", ["meetings-pending"])
     write_script(DATA, "px_tasks.py", ["tasks-remind"])
     write_script(DATA, "px_standup.py", ["standup-tick"])
+    write_script(DATA, "px_notion.py", ["notion-sync"])
+    write_script(DATA, "px_scorecard.py", ["scorecard-tick"])
+    write_script(DATA, "px_proactive.py", ["proactive-pending"])
     # The bot converses only in client channels (and DMs, which Slack never gates). The report
     # channel is deliberately left out, so messages there are ignored. An empty allowlist would
     # mean "every channel", hence the placeholder while there are no clients yet.
@@ -587,6 +590,23 @@ def hq_jobs(deliver, learn_model):
         # Daily standup: questions 45 min before, summary 5 min before (times set in chat; model-free).
         {"name": "px-standup", "schedule": "*/5 * * * *", "prompt": "",
          "args": ["--deliver", deliver, "--no-agent", "--script", "px_standup.py"]},
+        # Notion Agency OS: two-way task sync, meetings / clients / goals pushed (model-free).
+        {"name": "px-notion", "schedule": "*/10 * * * *", "prompt": "",
+         "args": ["--deliver", deliver, "--no-agent", "--script", "px_notion.py"]},
+        # Weekly team scorecard: Friday 18:00 (model-free, posts once a week).
+        {"name": "px-scorecard", "schedule": "*/15 18-21 * * 5", "prompt": "",
+         "args": ["--deliver", deliver, "--no-agent", "--script", "px_scorecard.py"]},
+        # Results vs goals: Monday internal summary, monthly client report drafts (sent only via approvals).
+        {"name": "px-results", "schedule": "30 10 * * 1",
+         "prompt": "Weekly results vs goals: follow results-report (Weekly).",
+         "args": common + skill_args("results-report")},
+        {"name": "px-results-monthly", "schedule": "30 10 1 * *",
+         "prompt": "Monthly client results reports: follow results-report (Monthly).",
+         "args": common + skill_args("results-report")},
+        # Proactive alerts: model-free triggers; the agent only runs when there are candidates to judge.
+        {"name": "px-proactive", "schedule": "*/30 9-20 * * 1-5",
+         "prompt": "Proactive alert candidates are waiting: follow proactive-review.",
+         "args": common + skill_args("proactive-review") + ["--monitor-script", "px_proactive.py"]},
         {"name": "px-digest", "schedule": "0 9 * * *",
          "prompt": "Daily agency digest: follow agency-digest.",
          "args": common + skill_args("agency-digest")},

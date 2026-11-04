@@ -290,4 +290,7 @@ def slack_factory(app, adapter):
     app.view("px_edit_submit")(on_edit_submit)
     app.view("px_reject_submit")(on_reject_submit)
     app.view("px_article_posted_submit")(on_article_posted_submit)
+    from perpetual_core import approvals
+    for callback_id, handler in approvals.VIEWS:        # approval Edit / Reject pop-ups
+        app.view(callback_id)(handler)
     log.info("Agency Bot: Slack Home tab, modals and %d card actions wired", len(ACTIONS))

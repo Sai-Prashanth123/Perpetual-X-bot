@@ -213,12 +213,22 @@ def handle_post(raw_args, source=None, **_):
 
 
 def register(ctx):
-    from perpetual_core import guard, meetings, standup, tasks, workspace
+    from perpetual_core import (approvals, goals, guard, meetings, notion_os, proactive, scorecard, standup,
+                                tasks, workspace)
     guard.register(ctx)          # power tools: owners only; secrets: never
     workspace.register(ctx)
     tasks.register(ctx)          # team tasks (chat, meetings, standups)
     meetings.register(ctx)       # meeting follow-up from the agency's Read AI
     standup.register(ctx)        # daily standup: questions, answers → tasks, summary
+    notion_os.register(ctx)      # Notion "Agency OS" link + sync status
+    approvals.register(ctx)      # request_approval / approvals_list / approval_cancel
+    for action_id, callback in approvals.ACTIONS:      # Approve / Edit / Reject buttons
+        ctx.register_slack_action_handler(action_id, callback)
+    goals.register(ctx)          # client goals, results vs goals, results_publish
+    scorecard.register(ctx)      # weekly team scorecard
+    proactive.register(ctx)      # proactive alerts: candidates → judge → send/skip, feedback
+    for action_id, callback in proactive.ACTIONS:      # Useful / Not now / Never
+        ctx.register_slack_action_handler(action_id, callback)
     from . import studio_hq
     studio_hq.register(ctx)      # run_studio: content for one or all clients
     console.register(ctx, toolset="xconsole")

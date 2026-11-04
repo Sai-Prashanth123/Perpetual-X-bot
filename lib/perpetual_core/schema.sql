@@ -406,3 +406,86 @@ ALTER TABLE standup_config ADD COLUMN IF NOT EXISTS eod_time TEXT NOT NULL DEFAU
 ALTER TABLE standup_config ADD COLUMN IF NOT EXISTS intro_sent_at TIMESTAMPTZ;
 ALTER TABLE standup_runs ADD COLUMN IF NOT EXISTS checkin_at TIMESTAMPTZ;
 ALTER TABLE standup_runs ADD COLUMN IF NOT EXISTS eod_at TIMESTAMPTZ;
+
+-- v12: Notion Agency OS sync.
+CREATE TABLE IF NOT EXISTS notion_os (
+    id           INT PRIMARY KEY DEFAULT 1,
+    page_id      TEXT,
+    url          TEXT,
+    dbs          JSONB,                      -- {"tasks": id, "meetings": id, "clients": id, "goals": id}
+    last_pull    TIMESTAMPTZ,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS notion_page_id TEXT;
+ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS notion_synced_at TIMESTAMPTZ;
+ALTER TABLE meetings ADD COLUMN IF NOT EXISTS notion_page_id TEXT;
+ALTER TABLE meetings ADD COLUMN IF NOT EXISTS notion_synced_at TIMESTAMPTZ;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS notion_page_id TEXT;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS notion_synced_at TIMESTAMPTZ;
+
+-- v13: approvals queue.
+CREATE TABLE IF NOT EXISTS approvals (
+    id            serial PRIMARY KEY,
+    kind          text NOT NULL,
+    summary       text,
+    payload       jsonb NOT NULL DEFAULT '{}',
+    preview       text,
+    requested_by  text,
+    requested_for text,                       -- whose account runs it: a Slack id or 'agency'
+    client        text,
+    status        text NOT NULL DEFAULT 'pending',  -- pending|approved|rejected|executed|failed|cancelled
+    decided_by    text,
+    decided_at    timestamptz,
+    result        jsonb,
+    error         text,
+    created_at    timestamptz NOT NULL DEFAULT now(),
+    approver_msg  jsonb NOT NULL DEFAULT '[]'  -- [{"channel", "ts"}] of each owner's card
+);
+CREATE INDEX IF NOT EXISTS approvals_status ON approvals (status, created_at);
+
+-- v13: client goals + weekly team scorecard.
+CREATE TABLE IF NOT EXISTS client_goals (
+    id          SERIAL PRIMARY KEY,
+    client      TEXT NOT NULL,
+    metric      TEXT NOT NULL CHECK (metric IN ('followers_gain','impressions','likes','replies','reposts',
+                                                'bookmarks','posts','engagement_rate')),
+    target      NUMERIC NOT NULL,
+    period      TEXT NOT NULL CHECK (period IN ('total','per_month','per_week','per_post','per_day')),
+    start_date  DATE NOT NULL DEFAULT current_date,
+    end_date    DATE,
+    note        TEXT,
+    created_by  TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    active      BOOLEAN NOT NULL DEFAULT true
+);
+CREATE INDEX IF NOT EXISTS client_goals_client ON client_goals(client, active);
+
+CREATE TABLE IF NOT EXISTS scorecard_runs (
+    week_end   DATE PRIMARY KEY,
+    posted_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- v13: proactive alerts.
+CREATE TABLE IF NOT EXISTS proactive_alerts (
+    id            SERIAL PRIMARY KEY,
+    trigger       TEXT NOT NULL,
+    key           TEXT NOT NULL,                    -- dedupe key, e.g. 'overdue:TASK-12'
+    target_slack  TEXT NOT NULL,                    -- who gets it
+    subject       TEXT,
+    facts         JSONB,
+    status        TEXT NOT NULL DEFAULT 'candidate', -- candidate|sent|skipped|useful|not_now|never|ignored|expired
+    reason        TEXT,                             -- why the judge skipped it
+    message       TEXT,                             -- what was sent (few-shot examples)
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    sent_at       TIMESTAMPTZ,
+    feedback_at   TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS proactive_alerts_key ON proactive_alerts (key, target_slack, created_at DESC);
+CREATE INDEX IF NOT EXISTS proactive_alerts_target ON proactive_alerts (target_slack, sent_at DESC);
+CREATE TABLE IF NOT EXISTS proactive_mutes (
+    target_slack  TEXT NOT NULL,
+    trigger       TEXT NOT NULL,
+    until         TIMESTAMPTZ,                      -- NULL = forever
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (target_slack, trigger)
+);

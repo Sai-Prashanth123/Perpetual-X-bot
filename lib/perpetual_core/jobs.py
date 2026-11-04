@@ -77,6 +77,24 @@ def main(argv):
             for r in meetings.pending(conn):
                 n = len(r["action_items"] or [])
                 print(f"meeting {r['id']} '{r['title']}' at {r['started_at']:%Y-%m-%d %H:%M}: {n} action item(s)")
+        elif cmd == "notion-sync":
+            # Agency OS in Notion: human edits pulled, new/changed rows pushed. Silent unless broken.
+            from . import connections, notion_os
+            try:
+                notion_os.sync(conn)
+            except connections.NotConnected:
+                return 0
+            except RuntimeError as e:
+                print(f"skipped {cmd}: {e}", file=sys.stderr)
+        elif cmd == "scorecard-tick":
+            # Team scorecard once a week, Friday >= 18:00 local (scorecard_runs guard). stdout stays empty.
+            from . import scorecard
+            scorecard.post(conn) if "--now" in argv else scorecard.tick(conn)
+        elif cmd == "proactive-pending":
+            # Monitor script: model-free triggers → pending candidates; quiet hours / none → no agent run.
+            from . import proactive
+            for line in proactive.pending_lines(conn):
+                print(line)
         elif cmd == "team-intro":
             from . import standup
             print(f"intro sent to {standup.send_intro(conn, force='--force' in argv)} member(s)")
