@@ -325,7 +325,8 @@ def main(runtime=False):
         edit_config(home, {
             "model.provider": "anthropic", "model.default": model, "timezone": tz,
             "approvals.mode": "manual", "memory.memory_enabled": True,
-            "plugins.enabled": ["perpetual"], "skills.external_dirs": [str(SHARED_SKILLS)],
+            "plugins.enabled": ["perpetual", "disk-cleanup", "security-guidance"],
+            "skills.external_dirs": [str(SHARED_SKILLS)],
             # One client, thought about deeply: high reasoning, and the web through Tavily.
             "agent.reasoning_effort": "high", "web.backend": "tavily",
             # The content studio runs a writing team per piece; keep the 1 GB server safe.
@@ -414,12 +415,21 @@ def main(runtime=False):
     })
     edit_config(DATA, {
         "model.provider": "anthropic", "model.default": model, "timezone": agency_tz,
-        "approvals.mode": "manual", "plugins.enabled": ["perpetual-hq"], "web.backend": "tavily",
+        "approvals.mode": "manual", "web.backend": "tavily",
         "gateway.multiplex_profiles": True, "gateway.profile_routes": routes,
         # Adding a client restarts the gateway; don't announce restarts in the reports channel.
         "slack.gateway_restart_notification": False,
         # Reply in the conversation itself, like a chat, instead of opening a thread per message.
         "slack.reply_in_thread": False,
+        # One continuous conversation per DM (Hermes' default starts a new session for every top-level
+        # DM message, which is why Agency Bot "forgot" what was just said).
+        "slack.dm_top_level_threads_as_sessions": False,
+        # Every Hermes plugin that helps here. Left off on purpose: chronos (replaces our scheduler),
+        # teams_pipeline (Microsoft Teams only).
+        "plugins.enabled": ["perpetual-hq", "disk-cleanup", "google_meet", "security-guidance"],
+        # All built-in toolsets in Slack: the defaults plus the opt-in ones (kanban, video, x_search
+        # needs XAI_API_KEY, speech-to-text, video generation). Power tools stay owner-only (guard.py).
+        "platform_toolsets.slack": ["hermes-slack", "kanban", "video", "video_gen", "x_search", "stt"],
     })
     hq_deliver = f"slack:{hq_channel}" if hq_channel else "local"
     fp = json.dumps([CRON_VERSION, hq_deliver, model, learn_model, agency_tz])
@@ -621,4 +631,16 @@ def hq_jobs(deliver, learn_model):
 
 
 if __name__ == "__main__":
-    main(runtime="--from-runtime" in sys.argv)
+    # The free Neon database can restart mid-setup ("terminating connection due to administrator
+    # command"). Every step here is idempotent, so just run the whole setup again.
+    import time
+    import psycopg
+    for attempt in range(4):
+        try:
+            main(runtime="--from-runtime" in sys.argv)
+            break
+        except psycopg.OperationalError as e:
+            if attempt == 3:
+                raise
+            log(f"database connection dropped ({e.__class__.__name__}); retrying setup in 15s")
+            time.sleep(15)

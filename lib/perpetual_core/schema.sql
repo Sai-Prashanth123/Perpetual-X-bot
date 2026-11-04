@@ -489,3 +489,27 @@ CREATE TABLE IF NOT EXISTS proactive_mutes (
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (target_slack, trigger)
 );
+
+-- v14: long-term memory + conversation log.
+CREATE TABLE IF NOT EXISTS agency_memory (
+    id          SERIAL PRIMARY KEY,
+    scope       TEXT NOT NULL,                    -- agency | person:<slack id> | client:<handle>
+    text        TEXT NOT NULL,
+    created_by  TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_used   TIMESTAMPTZ,
+    uses        INT NOT NULL DEFAULT 0,
+    active      BOOLEAN NOT NULL DEFAULT true
+);
+CREATE INDEX IF NOT EXISTS agency_memory_scope ON agency_memory(scope, active);
+CREATE TABLE IF NOT EXISTS conversation_log (
+    id          BIGSERIAL PRIMARY KEY,
+    slack_user  TEXT,
+    chat_id     TEXT,
+    platform    TEXT,
+    session_id  TEXT,
+    user_text   TEXT,
+    reply_text  TEXT,
+    at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS conversation_log_user ON conversation_log(slack_user, at DESC);

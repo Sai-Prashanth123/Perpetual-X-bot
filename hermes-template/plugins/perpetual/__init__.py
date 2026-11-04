@@ -478,6 +478,8 @@ def register(ctx):
     guard.register(ctx)          # power tools: owners only; secrets: never
     workspace.register(ctx)
     tasks.register(ctx)          # team tasks: 'add a task for Shravya: …', 'done TASK-4'
+    from perpetual_core import agency_memory
+    agency_memory.register(ctx)  # long-term memory shared with Agency Bot (facts + past conversations)
     hooks.register(ctx)          # hook research + hook library (content studio)
     swipe.register(ctx)          # competitor swipe file
     media.register(ctx)          # quote cards, carousels, voice briefs          # the asking person's own Google / Notion, if they connected it

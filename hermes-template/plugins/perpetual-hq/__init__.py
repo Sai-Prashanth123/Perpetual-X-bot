@@ -227,6 +227,8 @@ def register(ctx):
     goals.register(ctx)          # client goals, results vs goals, results_publish
     scorecard.register(ctx)      # weekly team scorecard
     proactive.register(ctx)      # proactive alerts: candidates → judge → send/skip, feedback
+    from perpetual_core import agency_memory
+    agency_memory.register(ctx)  # long-term memory: remember / recall / forget + context in every turn
     for action_id, callback in proactive.ACTIONS:      # Useful / Not now / Never
         ctx.register_slack_action_handler(action_id, callback)
     from . import studio_hq
