@@ -44,8 +44,9 @@ class FakeSlack:
         if method == "files.info":
             return {"ok": True, "file": {"permalink": "https://tp.slack.com/lists/T1/FLIST1"}}
         if method == "slackLists.access.set":
-            if self.fail_bulk and len(kw.get("user_ids") or []) > 1:
-                raise slackui.SlackError("slackLists.access.set: failed_to_update_user_ids")
+            assert len(kw.get("user_ids") or kw.get("channel_ids")) == 1, "Slack rejects several ids at once"
+            if self.fail_bulk and kw.get("user_ids") == ["USHR"]:
+                raise slackui.SlackError("slackLists.access.set: internal_error")
             return {"ok": True}
         if method == "slackLists.items.create":
             self.n += 1
@@ -94,8 +95,8 @@ def main():
     create = [c for c in fake.calls if c[0] == "slackLists.create"]
     check(len(create) == 1, "today's List created on first task")
     share = [c for c in fake.calls if c[0] == "slackLists.access.set"]
-    check(share and share[0][1]["user_ids"] == ["UOWNER", "USHR"] and share[0][1]["access_level"] == "write",
-          "List shared with the team only (not Toan)")
+    check([c[1].get("user_ids") or c[1].get("channel_ids") for c in share] == [["UOWNER"], ["USHR"], ["CHQ"]]
+          and all(c[1]["access_level"] == "write" for c in share), "List shared (write) with each member + team channel, not Toan")
     item = fake.items["Rec1"]
     check(item["fields"][0]["text"].startswith("Write Q4 plan") and item["fields"][2]["user"] == ["USHR"]
           and item["fields"][3]["date"] == [day.isoformat()], "task row has name, assignee, due date")
@@ -154,7 +155,7 @@ def main():
     check(lists.fill(conn, nxt, ["UOWNER", "USHR"]) == 0, "fill is idempotent")
     singles = [c for c in fake.calls if c[0] == "slackLists.access.set" and c[1].get("list_id") == new["list_id"]]
     check({tuple(c[1].get("user_ids") or c[1].get("channel_ids")) for c in singles} >= {("UOWNER",), ("USHR",), ("CHQ",)},
-          "bulk share failed → shared person by person + team channel (write)")
+          "shared person by person + team channel")
     check(all(c[1]["access_level"] == "write" for c in singles), "write access, not view")
     check(new["share_error"] and not new["shared_at"], "share error recorded, retried next tick")
     fake.fail_bulk = False

@@ -42,24 +42,19 @@ def get_daily(conn, day):
 
 
 def share(conn, lst, member_ids, slack=None):
-    """Give the team write access (people + the team channel). One bad id can't block the rest: if the
-    bulk call fails, each person is shared one by one. Records shared_at / share_error on the row."""
+    """Give the team write access (each person + the team channel). Records shared_at / share_error."""
     from .settings import env
     slack = slack or slackui.slack
     errors, ok = [], False
     ids = [u for u in dict.fromkeys(member_ids or []) if u]
-    if ids:
+    # one person per call: Slack rejects several user_ids at once (invalid_arguments), and one bad id
+    # must not block the rest
+    for u in ids:
         try:
-            slack("slackLists.access.set", list_id=lst["list_id"], access_level="write", user_ids=ids)
+            slack("slackLists.access.set", list_id=lst["list_id"], access_level="write", user_ids=[u])
             ok = True
-        except Exception as e:  # noqa: BLE001
-            errors.append(f"bulk: {e}")
-            for u in ids:
-                try:
-                    slack("slackLists.access.set", list_id=lst["list_id"], access_level="write", user_ids=[u])
-                    ok = True
-                except Exception as e1:  # noqa: BLE001
-                    errors.append(f"{u}: {e1}")
+        except Exception as e1:  # noqa: BLE001
+            errors.append(f"{u}: {e1}")
     ch = env("HQ_SLACK_CHANNEL")
     if ch:
         try:
