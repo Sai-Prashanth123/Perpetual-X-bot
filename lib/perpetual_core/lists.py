@@ -41,51 +41,126 @@ def get_daily(conn, day):
     return conn.execute("SELECT * FROM daily_lists WHERE day = %s", (day,)).fetchone()
 
 
+def share(conn, lst, member_ids, slack=None):
+    """Give the team write access (people + the team channel). One bad id can't block the rest: if the
+    bulk call fails, each person is shared one by one. Records shared_at / share_error on the row."""
+    from .settings import env
+    slack = slack or slackui.slack
+    errors, ok = [], False
+    ids = [u for u in dict.fromkeys(member_ids or []) if u]
+    if ids:
+        try:
+            slack("slackLists.access.set", list_id=lst["list_id"], access_level="write", user_ids=ids)
+            ok = True
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"bulk: {e}")
+            for u in ids:
+                try:
+                    slack("slackLists.access.set", list_id=lst["list_id"], access_level="write", user_ids=[u])
+                    ok = True
+                except Exception as e1:  # noqa: BLE001
+                    errors.append(f"{u}: {e1}")
+    ch = env("HQ_SLACK_CHANNEL")
+    if ch:
+        try:
+            slack("slackLists.access.set", list_id=lst["list_id"], access_level="write", channel_ids=[ch])
+            ok = True
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"{ch}: {e}")
+    if errors:
+        print(f"[agency-bot] daily List sharing: {'; '.join(errors)}", flush=True)
+    conn.execute("UPDATE daily_lists SET shared_at = CASE WHEN %s THEN now() END, share_error = %s WHERE day = %s",
+                 (ok and not errors, "; ".join(errors)[:1000] or None, lst["day"]))
+    conn.commit()
+    return {"ok": ok, "errors": errors}
+
+
 def ensure_daily(conn, day, member_ids, slack=None):
-    """Today's List, created once and shared (write access) with the team."""
+    """Today's List, created once and shared (write access) with the team. Sharing is retried on every
+    call until it fully succeeds."""
     slack = slack or slackui.slack
     row = get_daily(conn, day)
-    if row:
-        return row
-    r = slack("slackLists.create", name=list_name(day), todo_mode=True,
-              schema=[{"key": "name", "name": "Name", "type": "text", "is_primary_column": True}])
-    list_id = r["list_id"]
-    cols = _cols((r.get("list_metadata") or {}).get("schema"))
-    if member_ids:
+    if not row:
+        r = slack("slackLists.create", name=list_name(day), todo_mode=True,
+                  schema=[{"key": "name", "name": "Name", "type": "text", "is_primary_column": True}])
+        list_id = r["list_id"]
+        cols = _cols((r.get("list_metadata") or {}).get("schema"))
+        url = None
         try:
-            slack("slackLists.access.set", list_id=list_id, access_level="write", user_ids=list(member_ids))
+            url = (slack("files.info", file=list_id).get("file") or {}).get("permalink")
+        except Exception:  # noqa: BLE001
+            pass
+        conn.execute("INSERT INTO daily_lists(day, list_id, url, columns) VALUES (%s,%s,%s,%s) "
+                     "ON CONFLICT (day) DO NOTHING", (day, list_id, url, json.dumps(cols)))
+        conn.commit()
+        row = get_daily(conn, day)
+    if not row.get("shared_at"):
+        try:
+            share(conn, row, member_ids, slack)
         except Exception:  # noqa: BLE001 — sharing failure must not lose the list
             pass
-    url = None
-    try:
-        url = (slack("files.info", file=list_id).get("file") or {}).get("permalink")
-    except Exception:  # noqa: BLE001
-        pass
-    conn.execute("INSERT INTO daily_lists(day, list_id, url, columns) VALUES (%s,%s,%s,%s) ON CONFLICT (day) DO NOTHING",
-                 (day, list_id, url, json.dumps(cols)))
-    conn.commit()
-    return get_daily(conn, day)
+        row = get_daily(conn, day)
+    return row
 
 
-def add_task(conn, task, day=None, member_ids=None, slack=None):
-    """Add one team_tasks row to the day's List (idempotent). Returns the List item id or None."""
-    slack = slack or slackui.slack
-    if task.get("list_item_id"):
-        return task["list_item_id"]
-    day = day or date.today()
-    lst = ensure_daily(conn, day, member_ids, slack)
-    cols = lst["columns"] or {}
-    fields = [{"column_id": cols["name"], "rich_text": _rt(task["title"])}] if cols.get("name") else []
+def _item_fields(cols, task, title):
+    fields = [{"column_id": cols["name"], "rich_text": _rt(title)}] if cols.get("name") else []
     if task.get("owner_slack") and cols.get("assignee"):
         fields.append({"column_id": cols["assignee"], "user": [task["owner_slack"]]})
     if task.get("due") and cols.get("due"):
         fields.append({"column_id": cols["due"], "date": [task["due"].isoformat()]})
-    r = slack("slackLists.items.create", list_id=lst["list_id"], initial_fields=fields)
+    return fields
+
+
+def _put(conn, lst, task, title, slack):
+    r = slack("slackLists.items.create", list_id=lst["list_id"], initial_fields=_item_fields(lst["columns"] or {}, task, title))
     item_id = (r.get("item") or {}).get("id")
     conn.execute("UPDATE team_tasks SET list_id = %s, list_item_id = %s WHERE id = %s",
                  (lst["list_id"], item_id, task["id"]))
     conn.commit()
     return item_id
+
+
+def add_task(conn, task, day=None, member_ids=None, slack=None):
+    """Put one team_tasks row on the day's List (idempotent). Returns the List item id or None."""
+    slack = slack or slackui.slack
+    day = day or date.today()
+    lst = ensure_daily(conn, day, member_ids, slack)
+    if task.get("list_item_id") and task.get("list_id") == lst["list_id"]:
+        return task["list_item_id"]
+    return _put(conn, lst, task, _carried_title(conn, task, day), slack)
+
+
+def _carried_title(conn, task, day):
+    """The task's title, plus '(from 5-11)' when it's pending from an earlier day."""
+    since = None
+    if task.get("list_id"):
+        old = conn.execute("SELECT day FROM daily_lists WHERE list_id = %s", (task["list_id"],)).fetchone()
+        since = old and old["day"]
+    if not since and task.get("created_at"):
+        since = task["created_at"].date()
+    if since and since < day:
+        return f"{task['title']} (from {since.day}-{since.month})"
+    return task["title"]
+
+
+def fill(conn, day, member_ids=None, slack=None):
+    """Bring every open task (everyone's, any due date, including ones pending from earlier days) onto
+    the day's List. Already-there tasks are skipped. Returns how many were added."""
+    from . import tasks
+    slack = slack or slackui.slack
+    lst = ensure_daily(conn, day, member_ids, slack)
+    rows = conn.execute("""SELECT * FROM team_tasks WHERE status = ANY(%s) AND list_id IS DISTINCT FROM %s
+                           ORDER BY owner_name NULLS LAST, due NULLS LAST, id""",
+                        (list(tasks.OPEN), lst["list_id"])).fetchall()
+    n = 0
+    for t in rows:
+        try:
+            _put(conn, lst, t, _carried_title(conn, t, day), slack)
+            n += 1
+        except Exception as e:  # noqa: BLE001 — one bad row must not stop the rest
+            print(f"[agency-bot] daily List: couldn't add {tasks.code(t)}: {e}", flush=True)
+    return n
 
 
 def set_done(conn, task, done=True, slack=None):

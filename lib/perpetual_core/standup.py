@@ -121,6 +121,8 @@ def tick(conn, now=None, people=None):
         did = "eod"
     try:
         from . import lists
+        # today's List holds everyone's open tasks, including ones still pending from earlier days
+        lists.fill(conn, today, [p["id"] for p in members(cfg, people)])
         lists.sync(conn, today)
     except Exception:  # noqa: BLE001 — Lists not available (scope/plan): tasks still work in chat
         pass

@@ -62,14 +62,15 @@ def main():
     conn.commit()
     standup.save_answer(conn, "UNAGA", "Naga R", ["x"], ["Calls"], ["none"], day=wed.date())
     check(standup.tick(conn, wed.replace(hour=11, minute=25), PEOPLE) == "summary", "11:25 summary")
-    method, kw = POSTS[-1]
+    method, kw = [p for p in POSTS if p[0] == "chat.postMessage"][-1]
     text = kw["text"]
     check(method == "chat.postMessage" and kw["channel"] == "CHQ", "summary goes to the reports channel")
     check("2/3 answered" in text and "Write Q4 plan" in text, "summary lists plans")
     check("Need Alex's analytics access" in text and "Naga R:* none" not in text, "real blockers only")
     check("No answer yet:* Sai" in text, "who hasn't answered")
     POSTS.clear()
-    check(standup.tick(conn, wed.replace(hour=11, minute=28), PEOPLE) is None and not POSTS, "summary once")
+    check(standup.tick(conn, wed.replace(hour=11, minute=28), PEOPLE) is None
+          and not [p for p in POSTS if p[0] == "chat.postMessage"], "summary once")
     sat = datetime(2026, 11, 7, 10, 50, tzinfo=IST)
     check(standup.tick(conn, sat, PEOPLE) is None, "no standup on Saturday")
 

@@ -29,24 +29,29 @@ notify.dm = lambda ids, text: DMS.append((list(ids), text)) or len(ids)
 
 class FakeSlack:
     def __init__(self):
-        self.calls, self.items, self.n = [], {}, 0
+        self.calls, self.items, self.n, self.lists, self.fail_bulk = [], {}, 0, 0, False
 
     def __call__(self, method, **kw):
         self.calls.append((method, kw))
         if method == "slackLists.create":
             assert kw["todo_mode"] is True and kw["name"]
-            return {"ok": True, "list_id": "FLIST1", "list_metadata": {"schema": [
+            self.lists += 1
+            return {"ok": True, "list_id": f"FLIST{self.lists}", "list_metadata": {"schema": [
                 {"key": "name", "name": "Name", "is_primary_column": True, "type": "text", "id": "ColName"},
                 {"key": "todo_completed", "type": "todo_completed", "id": "Col00"},
                 {"key": "todo_assignee", "type": "todo_assignee", "id": "Col01"},
                 {"key": "todo_due_date", "type": "todo_due_date", "id": "Col02"}]}}
         if method == "files.info":
             return {"ok": True, "file": {"permalink": "https://tp.slack.com/lists/T1/FLIST1"}}
+        if method == "slackLists.access.set":
+            if self.fail_bulk and len(kw.get("user_ids") or []) > 1:
+                raise slackui.SlackError("slackLists.access.set: failed_to_update_user_ids")
+            return {"ok": True}
         if method == "slackLists.items.create":
             self.n += 1
             rid = f"Rec{self.n}"
             f = {x["column_id"]: x for x in kw["initial_fields"]}
-            self.items[rid] = {"id": rid, "fields": [
+            self.items[rid] = {"id": rid, "list": kw["list_id"], "fields": [
                 {"column_id": "ColName", "text": f["ColName"]["rich_text"][0]["elements"][0]["elements"][0]["text"]},
                 {"column_id": "Col00", "checkbox": False},
                 {"column_id": "Col01", "user": (f.get("Col01") or {}).get("user", [])},
@@ -59,7 +64,8 @@ class FakeSlack:
                         fld["checkbox"] = c["checkbox"]
             return {"ok": True}
         if method == "slackLists.items.list":
-            return {"ok": True, "items": list(self.items.values()), "response_metadata": {"next_cursor": ""}}
+            return {"ok": True, "items": [i for i in self.items.values() if i.get("list", kw["list_id"]) == kw["list_id"]],
+                    "response_metadata": {"next_cursor": ""}}
         return {"ok": True}
 
 
@@ -74,7 +80,7 @@ def main():
     slackui.slack = fake
     conn = ledger.connect()
     ledger.ensure_schema(conn)
-    conn.execute("DELETE FROM team_tasks WHERE list_id = 'FLIST1'")
+    conn.execute("DELETE FROM team_tasks WHERE list_id LIKE 'FLIST%%' OR status = ANY(%s)", (list(tasks.OPEN),))
     for t in ("standup_config", "standup_runs", "standup_answers", "daily_lists"):
         conn.execute(f"DELETE FROM {t}")
     conn.commit()
@@ -101,7 +107,7 @@ def main():
 
     # someone ticks the second task in Slack, and adds a row by hand
     fake.items["Rec2"]["fields"][1]["checkbox"] = True
-    fake.items["RecHand"] = {"id": "RecHand", "created_by": "USHR", "fields": [
+    fake.items["RecHand"] = {"id": "RecHand", "list": "FLIST1", "created_by": "USHR", "fields": [
         {"column_id": "ColName", "text": f"Hand-added {tag}"}, {"column_id": "Col00", "checkbox": False},
         {"column_id": "Col01", "user": ["USHR"]}, {"column_id": "Col02", "date": [day.isoformat()]}]}
     res = lists.sync(conn, day)
@@ -131,6 +137,32 @@ def main():
     DMS.clear()
     check(standup.send_intro(conn, PEOPLE) == 2 and "Agency Bot" in DMS[0][1], "intro to the 2 team members")
     check(standup.send_intro(conn, PEOPLE) == 0, "intro only once")
+
+    # ---- next day: everyone's open tasks carry over to the new List; done ones don't
+    from datetime import timedelta
+    nxt = day + timedelta(days=1)
+    conn.execute("UPDATE team_tasks SET status = 'open' WHERE title = %s", (f"Hand-added {tag}",))
+    conn.commit()
+    tasks.add(conn, [{"title": f"Undated {tag}", "owner": "Shravya"}], created_by="UOWNER", people=PEOPLE)
+    fake.fail_bulk = True
+    n = lists.fill(conn, nxt, ["UOWNER", "USHR"])
+    new = lists.get_daily(conn, nxt)
+    on_new = [i for i in fake.items.values() if i.get("list") == new["list_id"]]
+    names = [i["fields"][0]["text"] for i in on_new]
+    check(n == 2 and len(on_new) == 2, "next day's List gets all open tasks (not the done ones)")
+    check(any(x.startswith(f"Hand-added {tag} (from ") for x in names), "pending task marked '(from d-m)'")
+    check(lists.fill(conn, nxt, ["UOWNER", "USHR"]) == 0, "fill is idempotent")
+    singles = [c for c in fake.calls if c[0] == "slackLists.access.set" and c[1].get("list_id") == new["list_id"]]
+    check({tuple(c[1].get("user_ids") or c[1].get("channel_ids")) for c in singles} >= {("UOWNER",), ("USHR",), ("CHQ",)},
+          "bulk share failed → shared person by person + team channel (write)")
+    check(all(c[1]["access_level"] == "write" for c in singles), "write access, not view")
+    check(new["share_error"] and not new["shared_at"], "share error recorded, retried next tick")
+    fake.fail_bulk = False
+    lists.ensure_daily(conn, nxt, ["UOWNER", "USHR"])
+    check(lists.get_daily(conn, nxt)["shared_at"], "retry succeeds → shared")
+    t2 = conn.execute("SELECT * FROM team_tasks WHERE title = %s", (f"Hand-added {tag}",)).fetchone()
+    tasks.update(conn, tasks.code(t2), by="USHR", status="done")
+    check(fake.items[t2["list_item_id"]]["fields"][1]["checkbox"] is True, "done ticks the box on the new List")
 
     conn.execute("DELETE FROM team_tasks WHERE title LIKE %s", (f"%{tag}",))
     for t in ("standup_config", "standup_runs", "standup_answers", "daily_lists"):

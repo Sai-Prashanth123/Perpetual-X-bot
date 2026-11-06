@@ -513,3 +513,7 @@ CREATE TABLE IF NOT EXISTS conversation_log (
     at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS conversation_log_user ON conversation_log(slack_user, at DESC);
+
+-- v15: daily List sharing status (write access for the team).
+ALTER TABLE daily_lists ADD COLUMN IF NOT EXISTS shared_at TIMESTAMPTZ;
+ALTER TABLE daily_lists ADD COLUMN IF NOT EXISTS share_error TEXT;
