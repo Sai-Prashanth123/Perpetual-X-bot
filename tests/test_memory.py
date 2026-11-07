@@ -86,6 +86,21 @@ def main():
     check(ctx.hooks["pre_llm_call"](session_id="c", user_message="x", is_first_turn=True) is None,
           "scheduled jobs (no person) get nothing injected")
 
+    # full-text search: stemmed ("invoicing" finds "invoice"), ranked, word order free
+    m.remember(conn, f"Clients are invoiced monthly via Stripe {tag}", "agency")
+    hits = m.search(conn, f"how do we invoice clients {tag}", ["agency"])
+    check(hits and "invoiced monthly" in hits[0]["text"], "full-text recall finds stemmed matches")
+
+    # nightly digest: unreviewed conversations once, then nothing (no agent run)
+    import perpetual_core.slackui as slackui
+    slackui.person_name = lambda uid: "Test Person"
+    connections.current_user = lambda: me
+    ctx.hooks["post_llm_call"](session_id="s3", user_message=f"we always send reports on Fridays {tag}",
+                               assistant_response="Noted.", platform="slack")
+    lines = m.digest_lines(conn)
+    check(any("reports on Fridays" in x and "Test Person" in x for x in lines), "digest lists today's conversations")
+    check(m.digest_lines(conn) == [], "digest marks them reviewed (next run empty)")
+
     conn.execute("DELETE FROM agency_memory WHERE text LIKE %s", (f"%{tag}",))
     conn.execute("DELETE FROM conversation_log WHERE slack_user IN (%s, %s)", (me, other))
     conn.commit()

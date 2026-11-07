@@ -517,3 +517,9 @@ CREATE INDEX IF NOT EXISTS conversation_log_user ON conversation_log(slack_user,
 -- v15: daily List sharing status (write access for the team).
 ALTER TABLE daily_lists ADD COLUMN IF NOT EXISTS shared_at TIMESTAMPTZ;
 ALTER TABLE daily_lists ADD COLUMN IF NOT EXISTS share_error TEXT;
+
+-- v16: memory full-text search + nightly digest marker.
+ALTER TABLE conversation_log ADD COLUMN IF NOT EXISTS digested_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS agency_memory_fts ON agency_memory USING GIN (to_tsvector('english', text));
+CREATE INDEX IF NOT EXISTS conversation_log_fts ON conversation_log
+    USING GIN (to_tsvector('english', coalesce(user_text, '') || ' ' || coalesce(reply_text, '')));

@@ -95,6 +95,11 @@ def main(argv):
             from . import proactive
             for line in proactive.pending_lines(conn):
                 print(line)
+        elif cmd == "memory-digest":
+            # Monitor script: today's unreviewed conversations → the agent saves the durable facts.
+            from . import agency_memory
+            for line in agency_memory.digest_lines(conn):
+                print(line)
         elif cmd == "team-intro":
             from . import standup
             print(f"intro sent to {standup.send_intro(conn, force='--force' in argv)} member(s)")

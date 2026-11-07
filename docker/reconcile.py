@@ -206,6 +206,12 @@ def tavily_key():
 def main(runtime=False):
     shared = {
         "ANTHROPIC_API_KEY": env("ANTHROPIC_API_KEY", required=True),
+        # Extra keys join Hermes' credential pool: requests rotate round-robin across them and a key
+        # that hits a rate limit cools down while the others carry on.
+        "ANTHROPIC_API_KEY_2": env("ANTHROPIC_API_KEY_2"), "ANTHROPIC_API_KEY_3": env("ANTHROPIC_API_KEY_3"),
+        # Cloud browser + crawler and extra search (each optional; on when its key is set).
+        "FIRECRAWL_API_KEY": env("FIRECRAWL_API_KEY"), "EXA_API_KEY": env("EXA_API_KEY"),
+        "BROWSERBASE_API_KEY": env("BROWSERBASE_API_KEY"), "BROWSERBASE_PROJECT_ID": env("BROWSERBASE_PROJECT_ID"),
         "XCONSOLE_API_KEY": env("XCONSOLE_API_KEY", required=True),
         "XCONSOLE_URL": env("XCONSOLE_URL", "https://scraping.thought-pilot.co/api"),
         "DATABASE_URL": env("DATABASE_URL", required=True),
@@ -226,6 +232,9 @@ def main(runtime=False):
     }
     model = env("PX_MODEL", "claude-sonnet-5-5")
     learn_model = env("PX_LEARN_MODEL", "claude-opus-5-5")
+    global ROUTINE_MODEL
+    ROUTINE_MODEL = env("PX_ROUTINE_MODEL", ROUTINE_MODEL)
+    power = power_config(shared)
     hq_channel = env("HQ_SLACK_CHANNEL")
     agency_tz = env("AGENCY_TIMEZONE", "UTC")
 
@@ -331,11 +340,12 @@ def main(runtime=False):
             "agent.reasoning_effort": "high", "web.backend": "tavily",
             # The content studio runs a writing team per piece; keep the 1 GB server safe.
             "delegation.max_concurrent_children": int(env("PX_MAX_PARALLEL_AGENTS", "3")),
+            **power,
         })
         deliver = f"slack:{channel}"
         routes.append({"name": f"x-{slug}", "platform": "slack", "chat_id": str(channel), "profile": slug})
         channels.append(str(channel))
-        fp = json.dumps([CRON_VERSION, deliver, model, learn_model, tz, client_jobs_skills()])
+        fp = json.dumps([CRON_VERSION, deliver, model, learn_model, ROUTINE_MODEL, tz, client_jobs_skills()])
         if reconcile_cron(home, slug, client_jobs(deliver, learn_model, offset=minute_offset(handle)), fp):
             log(f"registered cron jobs for @{handle} → {deliver}")
         voice = skills_dir / "client-voice" / "SKILL.md"
@@ -393,6 +403,7 @@ def main(runtime=False):
     write_script(DATA, "px_viral.py", ["snapshot-viral"])
     write_script(DATA, "px_radar.py", ["radar-scan"])
     write_script(DATA, "px_trends.py", ["trend-scan"])
+    write_script(DATA, "px_memory.py", ["memory-digest"])
     write_script(DATA, "px_meetings.py", ["meetings-pending"])
     write_script(DATA, "px_tasks.py", ["tasks-remind"])
     write_script(DATA, "px_standup.py", ["standup-tick"])
@@ -415,7 +426,7 @@ def main(runtime=False):
     })
     edit_config(DATA, {
         "model.provider": "anthropic", "model.default": model, "timezone": agency_tz,
-        "approvals.mode": "manual", "web.backend": "tavily",
+        "approvals.mode": "manual",
         "gateway.multiplex_profiles": True, "gateway.profile_routes": routes,
         # Adding a client restarts the gateway; don't announce restarts in the reports channel.
         "slack.gateway_restart_notification": False,
@@ -430,9 +441,15 @@ def main(runtime=False):
         # All built-in toolsets in Slack: the defaults plus the opt-in ones (kanban, video, x_search
         # needs XAI_API_KEY, speech-to-text, video generation). Power tools stay owner-only (guard.py).
         "platform_toolsets.slack": ["hermes-slack", "kanban", "video", "video_gen", "x_search", "stt"],
+        # Big asks: think hard, split work across parallel sub-agents, don't get cut off mid-task.
+        "agent.reasoning_effort": "high",
+        "delegation.max_concurrent_children": int(env("PX_MAX_PARALLEL_AGENTS", "3")),
+        # Shared skills (operator, agency playbook, writing standards) for Agency Bot too.
+        "skills.external_dirs": [str(SHARED_SKILLS)],
+        **power,
     })
     hq_deliver = f"slack:{hq_channel}" if hq_channel else "local"
-    fp = json.dumps([CRON_VERSION, hq_deliver, model, learn_model, agency_tz])
+    fp = json.dumps([CRON_VERSION, hq_deliver, model, learn_model, ROUTINE_MODEL, agency_tz])
     if reconcile_cron(DATA, None, hq_jobs(hq_deliver, learn_model), fp):
         log(f"registered HQ cron jobs → {hq_deliver}")
     if not runtime and not conn.execute("SELECT 1 FROM viral_feed LIMIT 1").fetchone():
@@ -557,11 +574,11 @@ def client_jobs(deliver, learn_model, offset=0):
          "args": common + skill_args(*base, "daily-brief") + ["--reasoning-effort", "high"]},
         {"name": "px-report", "schedule": f"{offset} 11 * * 1",
          "prompt": "Weekly performance report: follow performance-report.",
-         "args": common + skill_args("client-brief", "playbook", "doc-templates", "performance-report")},
+         "args": common + skill_args("client-brief", "playbook", "doc-templates", "performance-report") + routine()},
         {"name": "px-postmortem", "schedule": f"{(offset + 7) % 60} */2 * * *",
          "prompt": "Posts reached 48 hours: follow post-mortem, then reply exactly [SILENT].",
          "args": common + skill_args("client-brief", "client-voice", "playbook", "post-mortem")
-                 + ["--monitor-script", "px_postmortem.py"]},
+                 + ["--monitor-script", "px_postmortem.py"] + routine()},
         {"name": "px-leads", "schedule": f"{offset} 10 * * 4",
          "prompt": "Weekly lead finder: follow lead-finder.",
          "args": common + skill_args("client-brief", "client-voice", "doc-templates", "lead-finder") + deep},
@@ -575,6 +592,34 @@ def client_jobs(deliver, learn_model, offset=0):
                    "skills. Then reply exactly [SILENT].",
          "args": common + skill_args(*base, "learning-review") + deep},
     ]
+
+
+ROUTINE_MODEL = "claude-haiku-5-5"
+
+
+def routine():
+    """Routine background jobs (triage, digests, scans) run on the cheaper fast model."""
+    return ["--provider", "anthropic", "--model", ROUTINE_MODEL]
+
+
+def power_config(shared):
+    """Config shared by every profile: key rotation, long tasks, web search/extract and the cloud browser,
+    each backend picked by which keys exist (free DuckDuckGo search when there's no paid one)."""
+    search = "exa" if shared.get("EXA_API_KEY") else ("tavily" if shared.get("TAVILY_API_KEY") else "ddgs")
+    extract = "firecrawl" if shared.get("FIRECRAWL_API_KEY") else ("tavily" if shared.get("TAVILY_API_KEY") else search)
+    browser = ("browserbase" if shared.get("BROWSERBASE_API_KEY") and shared.get("BROWSERBASE_PROJECT_ID")
+               else "firecrawl" if shared.get("FIRECRAWL_API_KEY") else None)
+    out = {
+        "credential_pool_strategies.anthropic": "round_robin",
+        "agent.max_turns": int(env("PX_MAX_TURNS", "120")),
+        "web.backend": "tavily" if shared.get("TAVILY_API_KEY") else search,
+        "web.search_backend": search, "web.extract_backend": extract,
+    }
+    if browser:
+        out["browser.cloud_provider"] = browser
+    log(f"power: search={search} extract={extract} browser={browser or 'off'} "
+        f"anthropic_keys={1 + sum(bool(shared.get(k)) for k in ('ANTHROPIC_API_KEY_2', 'ANTHROPIC_API_KEY_3'))}")
+    return out
 
 
 def hq_jobs(deliver, learn_model):
@@ -593,7 +638,7 @@ def hq_jobs(deliver, learn_model):
         # Meetings → tasks: finished calls from the agency's Read AI (model runs only when there's one).
         {"name": "px-meetings", "schedule": "*/20 7-22 * * *",
          "prompt": "A meeting finished: follow meeting-followup.",
-         "args": common + skill_args("meeting-followup") + ["--monitor-script", "px_meetings.py"]},
+         "args": common + skill_args("meeting-followup") + ["--monitor-script", "px_meetings.py"] + routine()},
         # Morning DM to each owner: tasks due today or overdue (model-free).
         {"name": "px-tasks", "schedule": "30 8 * * 1-5", "prompt": "",
          "args": ["--deliver", deliver, "--no-agent", "--script", "px_tasks.py"]},
@@ -609,17 +654,21 @@ def hq_jobs(deliver, learn_model):
         # Results vs goals: Monday internal summary, monthly client report drafts (sent only via approvals).
         {"name": "px-results", "schedule": "30 10 * * 1",
          "prompt": "Weekly results vs goals: follow results-report (Weekly).",
-         "args": common + skill_args("results-report")},
+         "args": common + skill_args("results-report") + routine()},
         {"name": "px-results-monthly", "schedule": "30 10 1 * *",
          "prompt": "Monthly client results reports: follow results-report (Monthly).",
          "args": common + skill_args("results-report")},
         # Proactive alerts: model-free triggers; the agent only runs when there are candidates to judge.
         {"name": "px-proactive", "schedule": "*/30 9-20 * * 1-5",
          "prompt": "Proactive alert candidates are waiting: follow proactive-review.",
-         "args": common + skill_args("proactive-review") + ["--monitor-script", "px_proactive.py"]},
+         "args": common + skill_args("proactive-review") + ["--monitor-script", "px_proactive.py"] + routine()},
         {"name": "px-digest", "schedule": "0 9 * * *",
          "prompt": "Daily agency digest: follow agency-digest.",
-         "args": common + skill_args("agency-digest")},
+         "args": common + skill_args("agency-digest") + routine()},
+        # Nightly memory: the day's conversations -> durable facts (agent runs only if there were chats).
+        {"name": "px-memory", "schedule": "15 23 * * *",
+         "prompt": "Today's conversations are below: follow memory-digest, then reply exactly [SILENT].",
+         "args": common + skill_args("memory-digest") + ["--monitor-script", "px_memory.py"] + routine()},
         {"name": "px-agency-report", "schedule": "0 10 * * 1",
          "prompt": "Weekly agency report: follow agency-report.",
          "args": common + skill_args("agency-report")},

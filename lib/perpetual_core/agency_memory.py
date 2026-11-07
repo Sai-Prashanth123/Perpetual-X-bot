@@ -43,6 +43,10 @@ CREATE TABLE IF NOT EXISTS conversation_log (
     at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS conversation_log_user ON conversation_log(slack_user, at DESC);
+ALTER TABLE conversation_log ADD COLUMN IF NOT EXISTS digested_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS agency_memory_fts ON agency_memory USING GIN (to_tsvector('english', text));
+CREATE INDEX IF NOT EXISTS conversation_log_fts ON conversation_log
+    USING GIN (to_tsvector('english', coalesce(user_text, '') || ' ' || coalesce(reply_text, '')));
 """
 
 STOP = set("""a an the and or but if then so to of in on at for with from by is are was were be been it this that
@@ -102,13 +106,27 @@ def remember(conn, text, scope="agency", by=None):
     return row["id"]
 
 
+def _tsquery(words):
+    """'invoice | pricing | alex' — any word matches, stemmed (invoices ~ invoice); ranking does the rest."""
+    terms = [re.sub(r"[^a-z0-9]", "", w) for w in words]
+    return " | ".join(t for t in terms if len(t) >= 3)
+
+
 def search(conn, query, scopes=None, limit=8):
-    """Facts ranked by how many query words they contain (then recency)."""
+    """Facts ranked by full-text relevance (stemmed, any word), then by plain word overlap, then recency."""
     words = _words(query)
     q, vals = ["active"], []
     if scopes:
         q.append("scope = ANY(%s)")
         vals.append(list(scopes))
+    tsq = _tsquery(words)
+    if tsq:
+        rows = conn.execute(
+            f"""SELECT *, ts_rank(to_tsvector('english', text), to_tsquery('english', %s)) AS score
+                FROM agency_memory WHERE {' AND '.join(q)} AND to_tsvector('english', text) @@ to_tsquery('english', %s)
+                ORDER BY score DESC, created_at DESC LIMIT %s""", (tsq, *vals, tsq, limit)).fetchall()
+        if rows:
+            return rows
     if words:
         score = " + ".join(["(CASE WHEN lower(text) LIKE %s THEN 1 ELSE 0 END)"] * len(words))
         vals_score = [f"%{w}%" for w in words]
@@ -129,10 +147,43 @@ def search_log(conn, query, user=None, limit=8):
     words = _words(query)
     if not words:
         return []
+    tsq = _tsquery(words)
+    if tsq:
+        doc = "to_tsvector('english', coalesce(user_text, '') || ' ' || coalesce(reply_text, ''))"
+        rows = conn.execute(f"""SELECT *, ts_rank({doc}, to_tsquery('english', %s)) AS score FROM conversation_log
+                                WHERE {doc} @@ to_tsquery('english', %s) AND (%s::text IS NULL OR slack_user = %s)
+                                ORDER BY score DESC, at DESC LIMIT %s""", (tsq, tsq, user, user, limit)).fetchall()
+        if rows:
+            return rows
     score = " + ".join(["(CASE WHEN lower(user_text || ' ' || coalesce(reply_text,'')) LIKE %s THEN 1 ELSE 0 END)"] * len(words))
     return conn.execute(f"""SELECT *, ({score}) AS score FROM conversation_log
                             WHERE (%s::text IS NULL OR slack_user = %s) ORDER BY score DESC, at DESC LIMIT %s""",
                         (*[f"%{w}%" for w in words], user, user, limit)).fetchall()
+
+
+def digest_lines(conn, limit=80, mark=True):
+    """Nightly memory digest (monitor script): the conversations not yet reviewed, one line each, for the
+    agent to pull durable facts from. Nothing new → no lines → no agent run. Marks them reviewed."""
+    rows = conn.execute("""SELECT * FROM conversation_log WHERE digested_at IS NULL
+                           AND at > now() - interval '3 days' ORDER BY at LIMIT %s""", (limit,)).fetchall()
+    if not rows:
+        return []
+    from . import slackui
+    names = {}
+    out = []
+    for r in rows:
+        who = r["slack_user"]
+        if who not in names:
+            try:
+                names[who] = slackui.person_name(who) or who
+            except Exception:  # noqa: BLE001
+                names[who] = who
+        out.append(f"[{r['at']:%d %b %H:%M}] {names[who]} ({who}) asked: {_clip(r['user_text'], 400)} "
+                   f"|| you answered: {_clip(r['reply_text'], 300)}")
+    if mark:
+        conn.execute("UPDATE conversation_log SET digested_at = now() WHERE id = ANY(%s)", ([r["id"] for r in rows],))
+        conn.commit()
+    return out
 
 
 # ---------------------------------------------------------------- hooks
