@@ -16,6 +16,25 @@ from datetime import datetime, timezone
 GROUP = "agency"
 
 
+def _fix_kuzu(driver):
+    """Two gaps in graphiti-core's (deprecated) Kuzu driver: it never sets `_database` (add_episode reads it),
+    and its build_indices_and_constraints is a no-op, so the full-text indexes search needs never exist.
+    Load Kuzu's FTS extension and create them (ignoring 'already exists')."""
+    import kuzu
+    from graphiti_core.driver.driver import GraphProvider
+    from graphiti_core.graph_queries import get_fulltext_indices
+    if not hasattr(driver, "_database"):
+        driver._database = None
+    conn = kuzu.Connection(driver.db)
+    for q in ["INSTALL fts;", "LOAD EXTENSION fts;"] + list(get_fulltext_indices(GraphProvider.KUZU)):
+        try:
+            conn.execute(q)
+        except Exception as e:  # noqa: BLE001
+            if "already" not in str(e).lower() and "exist" not in str(e).lower():
+                print(f"graph setup: {q[:50]}: {e}", file=sys.stderr)
+    conn.close()
+
+
 def _graphiti():
     from graphiti_core import Graphiti
     from graphiti_core.cross_encoder.client import CrossEncoderClient
@@ -30,11 +49,23 @@ def _graphiti():
             n = len(passages)
             return [(p, 1.0 - i / max(n, 1)) for i, p in enumerate(passages)]
 
+    import anthropic
     model = os.environ.get("GRAPH_MODEL") or "claude-haiku-5-5"
+    driver = KuzuDriver(db=os.environ["GRAPH_DB"])
+    _fix_kuzu(driver)
+    # The current Anthropic SDK no longer takes `temperature`; graphiti-core still passes it. Drop it.
+    sdk = anthropic.AsyncAnthropic(api_key=os.environ["ANTHROPIC_API_KEY"], max_retries=2)
+    create = sdk.messages.create
+
+    async def create_compat(*args, **kwargs):
+        kwargs.pop("temperature", None)
+        return await create(*args, **kwargs)
+
+    sdk.messages.create = create_compat
     return Graphiti(
-        graph_driver=KuzuDriver(db=os.environ["GRAPH_DB"]),
+        graph_driver=driver,
         llm_client=AnthropicClient(config=LLMConfig(api_key=os.environ["ANTHROPIC_API_KEY"], model=model,
-                                                    small_model=model, temperature=0), max_tokens=8192),
+                                                    small_model=model), client=sdk, max_tokens=8192),
         embedder=VoyageAIEmbedder(VoyageAIEmbedderConfig(api_key=os.environ["VOYAGE_API_KEY"],
                                                          embedding_model="voyage-3.5-lite", embedding_dim=1024)),
         cross_encoder=KeepOrder(),
