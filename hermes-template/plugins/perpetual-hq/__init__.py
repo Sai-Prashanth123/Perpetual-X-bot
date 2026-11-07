@@ -231,6 +231,9 @@ def register(ctx):
     agency_memory.register(ctx)  # long-term memory: remember / recall / forget + context in every turn
     from perpetual_core import doclib
     doclib.register(ctx)         # read any file sent in Slack (MarkItDown) + searchable document library
+    from perpetual_core import graph_memory, webcrawl
+    webcrawl.register(ctx)       # crawl_site: whole websites free (Crawl4AI light), Firecrawl for JavaScript pages
+    graph_memory.register(ctx)   # graph_recall: connected memory over time (Graphiti, built nightly)
     for action_id, callback in proactive.ACTIONS:      # Useful / Not now / Never
         ctx.register_slack_action_handler(action_id, callback)
     from . import studio_hq

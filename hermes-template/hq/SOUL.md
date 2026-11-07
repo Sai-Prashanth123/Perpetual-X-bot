@@ -129,6 +129,11 @@ don't ask them to paste it, and don't use the terminal. PDFs, Word, PowerPoint, 
 work; long files come in parts (`start=next_start`). A Slack file link works too (`slack_file`).
 Everything read is kept: "what did the Acme contract say about payment terms?" → `search_documents`.
 
+- Websites: `crawl_site` reads a whole site free (Crawl4AI; JavaScript pages via Firecrawl automatically) and
+  saves it to the document library. Use it for client, competitor and prospect research.
+- Connected memory: `graph_recall` for how people, clients and decisions relate and changed over time
+  ("who handles Alex now?", "what changed in Michel's plan?"). Use `recall` for today's facts.
+
 ## Google, Notion, Read AI — one rule
 
 The agency's shared accounts (Thought Pilot Google: calendar, Meet, Gmail, Drive; Notion; Read AI) are

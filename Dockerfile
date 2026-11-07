@@ -16,6 +16,15 @@ RUN uv pip install --quiet --python /opt/hermes/.venv/bin/python "ddgs>=9" \
 RUN uv venv --quiet --python /opt/hermes/.venv/bin/python /opt/markitdown \
     && uv pip install --quiet --python /opt/markitdown/bin/python "markitdown[pdf,docx,pptx,xlsx,xls]>=0.1" \
     || echo "markitdown not installed; documents limited to plain text"
+# Crawl4AI (light mode: plain HTTP, no browser) and Graphiti (embedded Kuzu graph) in their own venvs, run as
+# separate processes; the Langfuse SDK for Hermes' official observability plugin.
+RUN uv venv --quiet --python /opt/hermes/.venv/bin/python /opt/crawl4ai \
+    && uv pip install --quiet --python /opt/crawl4ai/bin/python "crawl4ai>=0.7" \
+    || echo "crawl4ai not installed; crawl_site falls back to Firecrawl"
+RUN uv venv --quiet --python /opt/hermes/.venv/bin/python /opt/graphiti \
+    && uv pip install --quiet --python /opt/graphiti/bin/python "graphiti-core[kuzu,anthropic,voyageai]" \
+    || echo "graphiti not installed; connected memory off"
+RUN uv pip install --quiet --python /opt/hermes/.venv/bin/python "langfuse>=3" || echo "langfuse SDK not installed"
 # Quote cards and carousels need real fonts.
 RUN (apt-get update -qq && apt-get install -y -qq --no-install-recommends fonts-dejavu-core \
      && rm -rf /var/lib/apt/lists/*) || echo "fonts-dejavu-core not installed; media falls back to the default font"

@@ -213,6 +213,11 @@ def main(runtime=False):
         "FIRECRAWL_API_KEY": env("FIRECRAWL_API_KEY"), "EXA_API_KEY": env("EXA_API_KEY"),
         # Search by meaning (memories, conversations, documents): Voyage AI embeddings in pgvector.
         "VOYAGE_API_KEY": env("VOYAGE_API_KEY"),
+        "PX_ROUTINE_MODEL": env("PX_ROUTINE_MODEL"),
+        # Observability (Langfuse Cloud): every turn, model call (with cost), tool call and sub-agent.
+        "HERMES_LANGFUSE_PUBLIC_KEY": env("LANGFUSE_PUBLIC_KEY"), "HERMES_LANGFUSE_SECRET_KEY": env("LANGFUSE_SECRET_KEY"),
+        "HERMES_LANGFUSE_BASE_URL": env("LANGFUSE_BASE_URL") if env("LANGFUSE_PUBLIC_KEY") else None,
+        "HERMES_LANGFUSE_CAPTURE": env("LANGFUSE_CAPTURE", "sanitized") if env("LANGFUSE_PUBLIC_KEY") else None,
         "BROWSERBASE_API_KEY": env("BROWSERBASE_API_KEY"), "BROWSERBASE_PROJECT_ID": env("BROWSERBASE_PROJECT_ID"),
         "XCONSOLE_API_KEY": env("XCONSOLE_API_KEY", required=True),
         "XCONSOLE_URL": env("XCONSOLE_URL", "https://scraping.thought-pilot.co/api"),
@@ -249,7 +254,7 @@ def main(runtime=False):
     script_env = {k: shared.get(k) for k in ("DATABASE_URL", "XCONSOLE_API_KEY", "XCONSOLE_URL", "OWNER_SLACK_IDS",
                                              # meeting follow-up reads the agency's Read AI (encrypted token)
                                              "TOKEN_ENCRYPTION_KEY", "READAI_CLIENT_ID", "READAI_CLIENT_SECRET",
-                                             "VOYAGE_API_KEY")}
+                                             "VOYAGE_API_KEY", "ANTHROPIC_API_KEY", "PX_ROUTINE_MODEL")}
     script_env["HQ_SLACK_CHANNEL"] = hq_channel
     script_env["SLACK_BOT_TOKEN"] = env("SLACK_BOT_TOKEN")      # jobs that DM receipts
     shared_env.write_text("".join(f"{k}={v}\n" for k, v in script_env.items() if v))
@@ -337,7 +342,7 @@ def main(runtime=False):
         edit_config(home, {
             "model.provider": "anthropic", "model.default": model, "timezone": tz,
             "approvals.mode": "manual", "memory.memory_enabled": True,
-            "plugins.enabled": ["perpetual", "disk-cleanup", "security-guidance"],
+            "plugins.enabled": ["perpetual", "disk-cleanup", "security-guidance"] + langfuse(home, slug, shared),
             "skills.external_dirs": [str(SHARED_SKILLS)],
             # One client, thought about deeply: high reasoning, and the web through Tavily.
             "agent.reasoning_effort": "high", "web.backend": "tavily",
@@ -408,6 +413,7 @@ def main(runtime=False):
     write_script(DATA, "px_trends.py", ["trend-scan"])
     write_script(DATA, "px_memory.py", ["memory-digest"])
     write_script(DATA, "px_index.py", ["semantic-index"])
+    write_script(DATA, "px_graph.py", ["graph-ingest"])
     write_script(DATA, "px_meetings.py", ["meetings-pending"])
     write_script(DATA, "px_tasks.py", ["tasks-remind"])
     write_script(DATA, "px_standup.py", ["standup-tick"])
@@ -441,7 +447,8 @@ def main(runtime=False):
         "slack.dm_top_level_threads_as_sessions": False,
         # Every Hermes plugin that helps here. Left off on purpose: chronos (replaces our scheduler),
         # teams_pipeline (Microsoft Teams only).
-        "plugins.enabled": ["perpetual-hq", "disk-cleanup", "google_meet", "security-guidance"],
+        "plugins.enabled": ["perpetual-hq", "disk-cleanup", "google_meet", "security-guidance"]
+                           + langfuse(DATA, None, shared),
         # All built-in toolsets in Slack: the defaults plus the opt-in ones (kanban, video, x_search
         # needs XAI_API_KEY, speech-to-text, video generation). Power tools stay owner-only (guard.py).
         "platform_toolsets.slack": ["hermes-slack", "kanban", "video", "video_gen", "x_search", "stt"],
@@ -606,6 +613,20 @@ def routine():
     return ["--provider", "anthropic", "--model", ROUTINE_MODEL]
 
 
+def langfuse(home, profile, shared):
+    """['langfuse'] when Langfuse keys are set (installing the official Hermes plugin once), else []."""
+    if not (shared.get("HERMES_LANGFUSE_PUBLIC_KEY") and shared.get("HERMES_LANGFUSE_SECRET_KEY")):
+        return []
+    if not (home / "plugins" / "langfuse").exists():
+        try:
+            hermes("plugins", "install", "langfuse", "--yes-deps", "--no-enable", profile=profile)
+            log(f"langfuse plugin installed ({profile or 'hq'})")
+        except RuntimeError as e:
+            log(f"langfuse plugin not installed ({profile or 'hq'}): {e}")
+            return []
+    return ["langfuse"]
+
+
 def power_config(shared):
     """Config shared by every profile: key rotation, long tasks, web search/extract and the cloud browser,
     each backend picked by which keys exist (free DuckDuckGo search when there's no paid one)."""
@@ -672,6 +693,9 @@ def hq_jobs(deliver, learn_model):
         # Search by meaning: embed new memories / chats / documents (model-free; idle without a Voyage key).
         {"name": "px-index", "schedule": "*/10 * * * *", "prompt": "",
          "args": ["--deliver", deliver, "--no-agent", "--script", "px_index.py"]},
+        # Connected memory: the day's new facts -> Graphiti knowledge graph (after the memory digest).
+        {"name": "px-graph", "schedule": "45 23 * * *", "prompt": "",
+         "args": ["--deliver", deliver, "--no-agent", "--script", "px_graph.py"]},
         # Nightly memory: the day's conversations -> durable facts (agent runs only if there were chats).
         {"name": "px-memory", "schedule": "15 23 * * *",
          "prompt": "Today's conversations are below: follow memory-digest, then reply exactly [SILENT].",

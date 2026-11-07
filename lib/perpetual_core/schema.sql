@@ -543,3 +543,11 @@ CREATE TABLE IF NOT EXISTS library_chunks (
     PRIMARY KEY (doc_id, n)
 );
 CREATE INDEX IF NOT EXISTS library_chunks_fts ON library_chunks USING GIN (to_tsvector('english', text));
+
+-- v18: connected memory (Graphiti) progress.
+CREATE TABLE IF NOT EXISTS graph_state (
+    id              INT PRIMARY KEY DEFAULT 1,
+    last_memory_id  INT NOT NULL DEFAULT 0,
+    last_run        TIMESTAMPTZ,
+    last_result     TEXT
+);

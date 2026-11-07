@@ -482,6 +482,9 @@ def register(ctx):
     agency_memory.register(ctx)  # long-term memory shared with Agency Bot (facts + past conversations)
     from perpetual_core import doclib
     doclib.register(ctx)         # read any file sent in Slack (MarkItDown) + searchable document library
+    from perpetual_core import graph_memory, webcrawl
+    webcrawl.register(ctx)       # crawl_site: whole websites free (Crawl4AI light), Firecrawl for JavaScript pages
+    graph_memory.register(ctx)   # graph_recall: connected memory over time (Graphiti, built nightly)
     hooks.register(ctx)          # hook research + hook library (content studio)
     swipe.register(ctx)          # competitor swipe file
     media.register(ctx)          # quote cards, carousels, voice briefs          # the asking person's own Google / Notion, if they connected it

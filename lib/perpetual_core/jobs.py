@@ -102,6 +102,15 @@ def main(argv):
                 semantic.index_pending(conn)
             except Exception as e:  # noqa: BLE001 — Voyage down: try again next run
                 print(f"skipped {cmd}: {e}", file=sys.stderr)
+        elif cmd == "graph-ingest":
+            # Nightly: new saved facts -> the Graphiti knowledge graph (separate process; off without keys).
+            from . import graph_memory
+            try:
+                msg = graph_memory.ingest(conn)
+                if msg:
+                    print(msg, file=sys.stderr)
+            except graph_memory.GraphError as e:
+                print(f"skipped {cmd}: {e}", file=sys.stderr)
         elif cmd == "memory-digest":
             # Monitor script: today's unreviewed conversations → the agent saves the durable facts.
             from . import agency_memory
