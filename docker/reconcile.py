@@ -411,7 +411,7 @@ def main(runtime=False):
     write_script(DATA, "px_viral.py", ["snapshot-viral"])
     write_script(DATA, "px_radar.py", ["radar-scan"])
     write_script(DATA, "px_trends.py", ["trend-scan"])
-    write_script(DATA, "px_memory.py", ["memory-digest"])
+    write_script(DATA, "px_sleep.py", ["sleep"])
     write_script(DATA, "px_index.py", ["semantic-index"])
     write_script(DATA, "px_graph.py", ["graph-ingest"])
     write_script(DATA, "px_meetings.py", ["meetings-pending"])
@@ -696,10 +696,11 @@ def hq_jobs(deliver, learn_model):
         # Connected memory: the day's new facts -> Graphiti knowledge graph (after the memory digest).
         {"name": "px-graph", "schedule": "45 23 * * *", "prompt": "",
          "args": ["--deliver", deliver, "--no-agent", "--script", "px_graph.py"]},
-        # Nightly memory: the day's conversations -> durable facts (agent runs only if there were chats).
-        {"name": "px-memory", "schedule": "15 23 * * *",
-         "prompt": "Today's conversations are below: follow memory-digest, then reply exactly [SILENT].",
-         "args": common + skill_args("memory-digest") + ["--monitor-script", "px_memory.py"] + routine()},
+        # Nightly sleep: replay the day's episodes (most surprising first) -> lessons + durable facts;
+        # forgetting curve runs first. The agent runs only when there's something to replay.
+        {"name": "px-sleep", "schedule": "15 23 * * *",
+         "prompt": "Tonight's episodes are below: follow sleep, then reply exactly [SILENT].",
+         "args": common + skill_args("sleep") + ["--monitor-script", "px_sleep.py"] + routine()},
         {"name": "px-agency-report", "schedule": "0 10 * * 1",
          "prompt": "Weekly agency report: follow agency-report.",
          "args": common + skill_args("agency-report")},

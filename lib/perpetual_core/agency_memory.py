@@ -53,7 +53,7 @@ STOP = set("""a an the and or but if then so to of in on at for with from by is 
 these those i you we they he she me my our your their its what which who whom how when where why can could would
 should will shall do does did done have has had not no yes please pls ok okay hi hello hey thanks thank also aslo
 need want like just get give make show tell send all any some more most much very about into over after before""".split())
-MAX_CONTEXT = 2200
+MAX_CONTEXT = 2800
 
 
 def _words(text):
@@ -233,6 +233,11 @@ def context_for(conn, user, message, is_first_turn, session_id=None):
                                            "ORDER BY created_at DESC LIMIT 6", ([f"client:{c}" for c in clients],))
                    if r["id"] not in {s["id"] for s in shared}]
     lines = []
+    try:                                   # learning from experience: lessons + learning style come first
+        from . import brain
+        lines += brain.context_lines(conn, user, message, clients, session_id)
+    except Exception:  # noqa: BLE001 — learning must never break a reply
+        conn.rollback()
     facts = own + [r for r in shared if r["id"] not in {o["id"] for o in own}]
     if facts:
         lines.append("What you remember (use it; don't repeat it back unless asked):")
@@ -257,6 +262,11 @@ def pre_llm_call(session_id=None, user_message=None, is_first_turn=False, **_):
     try:
         conn = ledger.connect()
         try:
+            try:                           # their message scores your last reply (corrected / redo / praised)
+                from . import brain
+                brain.score_previous(conn, user, user_message)
+            except Exception:  # noqa: BLE001
+                conn.rollback()
             text = context_for(conn, user, user_message, bool(is_first_turn), session_id)
         finally:
             conn.close()
@@ -269,13 +279,17 @@ def post_llm_call(session_id=None, user_message=None, assistant_response=None, p
     user = _user()
     if not user or not isinstance(user_message, str) or not user_message.strip() or not assistant_response:
         return None
+    from . import brain
+    tools, errors, lessons_used = brain.take_turn(session_id)
     try:
         conn = ledger.connect()
         try:
-            conn.execute("""INSERT INTO conversation_log(slack_user, chat_id, platform, session_id, user_text, reply_text)
-                            VALUES (%s,%s,%s,%s,%s,%s)""",
+            conn.execute("""INSERT INTO conversation_log(slack_user, chat_id, platform, session_id, user_text, reply_text,
+                                                         situation, tools, tool_errors, reward, lessons_used)
+                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::int[])""",
                          (user, _env("HERMES_SESSION_CHAT_ID"), str(platform or ""), session_id,
-                          user_message[:3000], str(assistant_response)[:3000]))
+                          user_message[:3000], str(assistant_response)[:3000], brain.situation(user_message),
+                          json.dumps(tools) if tools else None, errors, -0.2 * errors, lessons_used))
             conn.execute("DELETE FROM conversation_log WHERE at < now() - interval '120 days'")
             conn.commit()
         finally:
@@ -355,3 +369,5 @@ def register(ctx, toolset="memory_store"):
     if hasattr(ctx, "register_hook"):
         ctx.register_hook("pre_llm_call", pre_llm_call)
         ctx.register_hook("post_llm_call", post_llm_call)
+    from . import brain
+    brain.register(ctx, toolset)       # learning from experience: lessons, reward, nightly sleep

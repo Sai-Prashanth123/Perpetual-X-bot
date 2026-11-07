@@ -551,3 +551,31 @@ CREATE TABLE IF NOT EXISTS graph_state (
     last_run        TIMESTAMPTZ,
     last_result     TEXT
 );
+
+-- v19: learning from experience (episodes get situation/tools/reward; lessons with strength).
+ALTER TABLE conversation_log ADD COLUMN IF NOT EXISTS situation TEXT;
+ALTER TABLE conversation_log ADD COLUMN IF NOT EXISTS tools JSONB;
+ALTER TABLE conversation_log ADD COLUMN IF NOT EXISTS tool_errors INT NOT NULL DEFAULT 0;
+ALTER TABLE conversation_log ADD COLUMN IF NOT EXISTS reward REAL NOT NULL DEFAULT 0;
+ALTER TABLE conversation_log ADD COLUMN IF NOT EXISTS signals TEXT[];
+ALTER TABLE conversation_log ADD COLUMN IF NOT EXISTS lessons_used INT[];
+ALTER TABLE conversation_log ADD COLUMN IF NOT EXISTS consolidated_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS conversation_log_pending ON conversation_log(at) WHERE consolidated_at IS NULL;
+CREATE TABLE IF NOT EXISTS lessons (
+    id           SERIAL PRIMARY KEY,
+    scope        TEXT NOT NULL,                 -- agency | person:<slack id> | client:<handle>
+    situation    TEXT NOT NULL DEFAULT 'any',
+    rule         TEXT NOT NULL,
+    kind         TEXT NOT NULL DEFAULT 'do',    -- do | avoid | prefer
+    strength     REAL NOT NULL DEFAULT 1.0,
+    evidence     INT NOT NULL DEFAULT 1,
+    episode_ids  BIGINT[],
+    created_by   TEXT,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_seen    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_used    TIMESTAMPTZ,
+    uses         INT NOT NULL DEFAULT 0,
+    active       BOOLEAN NOT NULL DEFAULT true
+);
+CREATE INDEX IF NOT EXISTS lessons_scope ON lessons(scope, active);
+CREATE INDEX IF NOT EXISTS lessons_fts ON lessons USING GIN (to_tsvector('english', rule));

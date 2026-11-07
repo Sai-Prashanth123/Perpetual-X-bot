@@ -41,7 +41,8 @@ def main():
     connections.current_user = lambda: me
     ctx = Ctx()
     m.register(ctx)
-    check(set(ctx.tools) == {"remember", "recall", "forget"} and set(ctx.hooks) == {"pre_llm_call", "post_llm_call"},
+    check({"remember", "recall", "forget", "lesson_learn", "lessons_list"} <= set(ctx.tools)
+          and set(ctx.hooks) == {"pre_llm_call", "post_llm_call", "post_tool_call"},
           "tools + hooks registered")
 
     out = json.loads(ctx.tools["remember"]({"fact": f"Alex prefers threads over single tweets {tag}", "about": "@ItsAlexVacca"}))

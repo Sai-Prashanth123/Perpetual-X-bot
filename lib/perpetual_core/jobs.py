@@ -111,11 +111,16 @@ def main(argv):
                     print(msg, file=sys.stderr)
             except graph_memory.GraphError as e:
                 print(f"skipped {cmd}: {e}", file=sys.stderr)
-        elif cmd == "memory-digest":
-            # Monitor script: today's unreviewed conversations → the agent saves the durable facts.
-            from . import agency_memory
-            for line in agency_memory.digest_lines(conn):
+        elif cmd in ("sleep", "memory-digest"):
+            # Monitor script (nightly "sleep"): forgetting curve, then the episodes to replay, most surprising
+            # first -> the agent saves lessons + facts. Nothing to replay = no output = no agent run.
+            from . import brain
+            for line in brain.sleep_lines(conn):
                 print(line)
+        elif cmd == "brain-bootstrap":
+            # One-time "childhood": score the whole conversation history so sleep can learn from it.
+            from . import brain
+            print(brain.bootstrap(conn), file=sys.stderr)
         elif cmd == "team-intro":
             from . import standup
             print(f"intro sent to {standup.send_intro(conn, force='--force' in argv)} member(s)")

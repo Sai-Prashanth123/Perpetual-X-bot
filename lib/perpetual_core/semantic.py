@@ -5,7 +5,7 @@ retainer goes to $6k in January" even though no word matches.
 Off until VOYAGE_API_KEY is set (and the database has the `vector` extension, which Neon does); every
 caller falls back to full-text search, so nothing breaks without it.
 
-    embeddings(kind, ref_id, chunk)  kind = memory | conversation | document
+    embeddings(kind, ref_id, chunk)  kind = memory | conversation | document | lesson
     index_pending(conn)              embeds anything new (cron px-index, model-free)
     search(conn, query, kinds, ...)  nearest by cosine distance
 """
@@ -35,6 +35,7 @@ CREATE INDEX IF NOT EXISTS embeddings_hnsw ON embeddings USING hnsw (embedding v
 """
 
 _ready = {}
+_qcache = {}          # query text -> vector (one chat turn searches memories, chats and lessons with one call)
 
 
 def enabled():
@@ -109,6 +110,15 @@ def index_pending(conn, limit=200):
                ORDER BY k.doc_id DESC, k.n LIMIT %s""", (limit,))]
     except Exception:  # noqa: BLE001 — document library not created yet
         conn.rollback()
+    try:
+        todo += [("lesson", r["id"], 0, r["scope"], r["rule"]) for r in conn.execute(
+            """SELECT l.id, l.scope, l.rule FROM lessons l
+               WHERE l.active AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.kind = 'lesson' AND e.ref_id = l.id)
+               ORDER BY l.id LIMIT %s""", (limit,))]
+        conn.execute("""DELETE FROM embeddings e USING lessons l
+                        WHERE e.kind = 'lesson' AND e.ref_id = l.id AND NOT l.active""")
+    except Exception:  # noqa: BLE001 — lessons table not created yet
+        conn.rollback()
     # forgotten memories leave the index
     conn.execute("""DELETE FROM embeddings e USING agency_memory m
                     WHERE e.kind = 'memory' AND e.ref_id = m.id AND NOT m.active""")
@@ -120,10 +130,15 @@ def search(conn, query, kinds, scopes=None, limit=8, max_distance=0.65):
     """Nearest items by meaning: [{kind, ref_id, chunk, scope, text, distance}] ([] when off)."""
     if not (query or "").strip() or not ready(conn):
         return []
-    try:
-        qv = _vec(embed([query], "query", timeout=6)[0])   # per chat turn: never stall a reply
-    except Exception:  # noqa: BLE001 — Voyage down / quota: callers use full-text search
-        return []
+    qv = _qcache.get(query)
+    if qv is None:
+        try:
+            qv = _vec(embed([query], "query", timeout=6)[0])   # per chat turn: never stall a reply
+        except Exception:  # noqa: BLE001 — Voyage down / quota: callers use full-text search
+            return []
+        if len(_qcache) > 64:
+            _qcache.clear()
+        _qcache[query] = qv
     where, vals = ["kind = ANY(%s)"], [list(kinds)]
     if scopes is not None:
         where.append("scope = ANY(%s)")
