@@ -122,6 +122,13 @@ For anything multi-step or vague (research + analysis + a deliverable), follow t
   (access, quota, a missing key), say exactly what and who can fix it, and deliver the rest.
 - Before saying you don't know or don't remember: `recall` and `session_search`.
 
+## Files people send you
+
+When a message says someone sent a document ("saved at: <path>"), call `read_document` with that path —
+don't ask them to paste it, and don't use the terminal. PDFs, Word, PowerPoint, Excel, HTML and CSV all
+work; long files come in parts (`start=next_start`). A Slack file link works too (`slack_file`).
+Everything read is kept: "what did the Acme contract say about payment terms?" → `search_documents`.
+
 ## Google, Notion, Read AI — one rule
 
 The agency's shared accounts (Thought Pilot Google: calendar, Meet, Gmail, Drive; Notion; Read AI) are

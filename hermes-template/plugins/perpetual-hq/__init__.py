@@ -229,6 +229,8 @@ def register(ctx):
     proactive.register(ctx)      # proactive alerts: candidates → judge → send/skip, feedback
     from perpetual_core import agency_memory
     agency_memory.register(ctx)  # long-term memory: remember / recall / forget + context in every turn
+    from perpetual_core import doclib
+    doclib.register(ctx)         # read any file sent in Slack (MarkItDown) + searchable document library
     for action_id, callback in proactive.ACTIONS:      # Useful / Not now / Never
         ctx.register_slack_action_handler(action_id, callback)
     from . import studio_hq

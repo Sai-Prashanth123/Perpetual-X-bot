@@ -523,3 +523,23 @@ ALTER TABLE conversation_log ADD COLUMN IF NOT EXISTS digested_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS agency_memory_fts ON agency_memory USING GIN (to_tsvector('english', text));
 CREATE INDEX IF NOT EXISTS conversation_log_fts ON conversation_log
     USING GIN (to_tsvector('english', coalesce(user_text, '') || ' ' || coalesce(reply_text, '')));
+
+-- v17: document library (MarkItDown) + chunks for search.
+CREATE TABLE IF NOT EXISTS library_docs (
+    id          SERIAL PRIMARY KEY,
+    sha256      TEXT UNIQUE NOT NULL,
+    name        TEXT NOT NULL,
+    source      TEXT,                     -- slack upload / slack file id
+    slack_user  TEXT,
+    chat_id     TEXT,
+    chars       INT NOT NULL DEFAULT 0,
+    text        TEXT NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS library_chunks (
+    doc_id  INT NOT NULL REFERENCES library_docs(id) ON DELETE CASCADE,
+    n       INT NOT NULL,
+    text    TEXT NOT NULL,
+    PRIMARY KEY (doc_id, n)
+);
+CREATE INDEX IF NOT EXISTS library_chunks_fts ON library_chunks USING GIN (to_tsvector('english', text));

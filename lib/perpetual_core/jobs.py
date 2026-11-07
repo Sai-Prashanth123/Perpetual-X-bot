@@ -95,6 +95,13 @@ def main(argv):
             from . import proactive
             for line in proactive.pending_lines(conn):
                 print(line)
+        elif cmd == "semantic-index":
+            # Embed new memories / conversations / document chunks (no-op until VOYAGE_API_KEY is set).
+            from . import semantic
+            try:
+                semantic.index_pending(conn)
+            except Exception as e:  # noqa: BLE001 — Voyage down: try again next run
+                print(f"skipped {cmd}: {e}", file=sys.stderr)
         elif cmd == "memory-digest":
             # Monitor script: today's unreviewed conversations → the agent saves the durable facts.
             from . import agency_memory

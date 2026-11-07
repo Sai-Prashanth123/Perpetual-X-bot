@@ -113,6 +113,21 @@ def _tsquery(words):
 
 
 def search(conn, query, scopes=None, limit=8):
+    """Facts by meaning first (semantic search, when on), topped up by full-text matches."""
+    from . import semantic
+    hits = semantic.search(conn, query, ["memory"], scopes, limit)
+    if not hits:
+        return _search_text(conn, query, scopes, limit)
+    rows = conn.execute("SELECT *, 1.0 AS score FROM agency_memory WHERE id = ANY(%s) AND active",
+                        ([h["ref_id"] for h in hits],)).fetchall()
+    order = {h["ref_id"]: i for i, h in enumerate(hits)}
+    rows = sorted(rows, key=lambda r: order[r["id"]])
+    seen = {r["id"] for r in rows}
+    rows += [r for r in _search_text(conn, query, scopes, limit) if r["id"] not in seen]
+    return rows[:limit]
+
+
+def _search_text(conn, query, scopes=None, limit=8):
     """Facts ranked by full-text relevance (stemmed, any word), then by plain word overlap, then recency."""
     words = _words(query)
     q, vals = ["active"], []
@@ -144,6 +159,18 @@ def recent_exchanges(conn, user, limit=5, exclude_session=None):
 
 
 def search_log(conn, query, user=None, limit=8):
+    """Past exchanges by meaning first (when on), else full-text; `user` limits to one person's chats."""
+    from . import semantic
+    hits = semantic.search(conn, query, ["conversation"], [user] if user else None, limit)
+    if hits:
+        rows = conn.execute("SELECT *, 1.0 AS score FROM conversation_log WHERE id = ANY(%s)",
+                            ([h["ref_id"] for h in hits],)).fetchall()
+        order = {h["ref_id"]: i for i, h in enumerate(hits)}
+        return sorted(rows, key=lambda r: order[r["id"]])
+    return _search_log_text(conn, query, user, limit)
+
+
+def _search_log_text(conn, query, user=None, limit=8):
     words = _words(query)
     if not words:
         return []

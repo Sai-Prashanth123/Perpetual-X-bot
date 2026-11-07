@@ -480,6 +480,8 @@ def register(ctx):
     tasks.register(ctx)          # team tasks: 'add a task for Shravya: …', 'done TASK-4'
     from perpetual_core import agency_memory
     agency_memory.register(ctx)  # long-term memory shared with Agency Bot (facts + past conversations)
+    from perpetual_core import doclib
+    doclib.register(ctx)         # read any file sent in Slack (MarkItDown) + searchable document library
     hooks.register(ctx)          # hook research + hook library (content studio)
     swipe.register(ctx)          # competitor swipe file
     media.register(ctx)          # quote cards, carousels, voice briefs          # the asking person's own Google / Notion, if they connected it

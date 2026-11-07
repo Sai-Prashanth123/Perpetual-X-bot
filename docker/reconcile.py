@@ -211,6 +211,8 @@ def main(runtime=False):
         "ANTHROPIC_API_KEY_2": env("ANTHROPIC_API_KEY_2"), "ANTHROPIC_API_KEY_3": env("ANTHROPIC_API_KEY_3"),
         # Cloud browser + crawler and extra search (each optional; on when its key is set).
         "FIRECRAWL_API_KEY": env("FIRECRAWL_API_KEY"), "EXA_API_KEY": env("EXA_API_KEY"),
+        # Search by meaning (memories, conversations, documents): Voyage AI embeddings in pgvector.
+        "VOYAGE_API_KEY": env("VOYAGE_API_KEY"),
         "BROWSERBASE_API_KEY": env("BROWSERBASE_API_KEY"), "BROWSERBASE_PROJECT_ID": env("BROWSERBASE_PROJECT_ID"),
         "XCONSOLE_API_KEY": env("XCONSOLE_API_KEY", required=True),
         "XCONSOLE_URL": env("XCONSOLE_URL", "https://scraping.thought-pilot.co/api"),
@@ -246,7 +248,8 @@ def main(runtime=False):
     shared_env = DATA / "perpetual-shared.env"
     script_env = {k: shared.get(k) for k in ("DATABASE_URL", "XCONSOLE_API_KEY", "XCONSOLE_URL", "OWNER_SLACK_IDS",
                                              # meeting follow-up reads the agency's Read AI (encrypted token)
-                                             "TOKEN_ENCRYPTION_KEY", "READAI_CLIENT_ID", "READAI_CLIENT_SECRET")}
+                                             "TOKEN_ENCRYPTION_KEY", "READAI_CLIENT_ID", "READAI_CLIENT_SECRET",
+                                             "VOYAGE_API_KEY")}
     script_env["HQ_SLACK_CHANNEL"] = hq_channel
     script_env["SLACK_BOT_TOKEN"] = env("SLACK_BOT_TOKEN")      # jobs that DM receipts
     shared_env.write_text("".join(f"{k}={v}\n" for k, v in script_env.items() if v))
@@ -404,6 +407,7 @@ def main(runtime=False):
     write_script(DATA, "px_radar.py", ["radar-scan"])
     write_script(DATA, "px_trends.py", ["trend-scan"])
     write_script(DATA, "px_memory.py", ["memory-digest"])
+    write_script(DATA, "px_index.py", ["semantic-index"])
     write_script(DATA, "px_meetings.py", ["meetings-pending"])
     write_script(DATA, "px_tasks.py", ["tasks-remind"])
     write_script(DATA, "px_standup.py", ["standup-tick"])
@@ -665,6 +669,9 @@ def hq_jobs(deliver, learn_model):
         {"name": "px-digest", "schedule": "0 9 * * *",
          "prompt": "Daily agency digest: follow agency-digest.",
          "args": common + skill_args("agency-digest") + routine()},
+        # Search by meaning: embed new memories / chats / documents (model-free; idle without a Voyage key).
+        {"name": "px-index", "schedule": "*/10 * * * *", "prompt": "",
+         "args": ["--deliver", deliver, "--no-agent", "--script", "px_index.py"]},
         # Nightly memory: the day's conversations -> durable facts (agent runs only if there were chats).
         {"name": "px-memory", "schedule": "15 23 * * *",
          "prompt": "Today's conversations are below: follow memory-digest, then reply exactly [SILENT].",

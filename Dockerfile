@@ -11,6 +11,11 @@ RUN uv pip install --quiet --python /opt/hermes/.venv/bin/python --target /opt/p
 # Free DuckDuckGo web search: Hermes' fallback when no paid search key has credit left.
 RUN uv pip install --quiet --python /opt/hermes/.venv/bin/python "ddgs>=9" \
     || echo "ddgs not installed; web search needs a paid key"
+# Microsoft MarkItDown (PDF / Word / PowerPoint / Excel / HTML -> text) in its own venv: run as a separate
+# process per document, so its libraries never load into the bot.
+RUN uv venv --quiet --python /opt/hermes/.venv/bin/python /opt/markitdown \
+    && uv pip install --quiet --python /opt/markitdown/bin/python "markitdown[pdf,docx,pptx,xlsx,xls]>=0.1" \
+    || echo "markitdown not installed; documents limited to plain text"
 # Quote cards and carousels need real fonts.
 RUN (apt-get update -qq && apt-get install -y -qq --no-install-recommends fonts-dejavu-core \
      && rm -rf /var/lib/apt/lists/*) || echo "fonts-dejavu-core not installed; media falls back to the default font"
