@@ -97,9 +97,15 @@ async def search(query, limit):
     try:
         edges = await g.search(query, group_ids=[GROUP], num_results=limit)
         iso = lambda d: d.isoformat() if d else None  # noqa: E731
+        now = datetime.now(timezone.utc)
+
+        def still_true(inv):
+            if inv is None:
+                return True
+            return (inv if inv.tzinfo else inv.replace(tzinfo=timezone.utc)) > now   # Kuzu returns naive UTC
+
         return [{"fact": e.fact, "valid_at": iso(e.valid_at), "invalid_at": iso(e.invalid_at),
-                 "created_at": iso(e.created_at), "still_true": e.invalid_at is None or e.invalid_at > datetime.now(timezone.utc)}
-                for e in edges]
+                 "created_at": iso(e.created_at), "still_true": still_true(e.invalid_at)} for e in edges]
     finally:
         await g.close()
 
