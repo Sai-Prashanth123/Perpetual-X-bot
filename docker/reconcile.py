@@ -236,6 +236,9 @@ def main(runtime=False):
         "GOOGLE_CLIENT_ID": env("GOOGLE_CLIENT_ID"), "GOOGLE_CLIENT_SECRET": env("GOOGLE_CLIENT_SECRET"),
         "NOTION_CLIENT_ID": env("NOTION_CLIENT_ID"), "NOTION_CLIENT_SECRET": env("NOTION_CLIENT_SECRET"),
         "READAI_CLIENT_ID": env("READAI_CLIENT_ID"), "READAI_CLIENT_SECRET": env("READAI_CLIENT_SECRET"),
+        # Audience Seeding (private GitHub repo, read-only token): daily engage lists, patterns, reports.
+        "SEEDING_GITHUB_TOKEN": env("SEEDING_GITHUB_TOKEN"), "SEEDING_REPO": env("SEEDING_REPO"),
+        "HQ_SLACK_CHANNEL": env("HQ_SLACK_CHANNEL"),
     }
     model = env("PX_MODEL", "claude-sonnet-5-5")
     learn_model = env("PX_LEARN_MODEL", "claude-opus-5-5")
@@ -254,7 +257,8 @@ def main(runtime=False):
     script_env = {k: shared.get(k) for k in ("DATABASE_URL", "XCONSOLE_API_KEY", "XCONSOLE_URL", "OWNER_SLACK_IDS",
                                              # meeting follow-up reads the agency's Read AI (encrypted token)
                                              "TOKEN_ENCRYPTION_KEY", "READAI_CLIENT_ID", "READAI_CLIENT_SECRET",
-                                             "VOYAGE_API_KEY", "ANTHROPIC_API_KEY", "PX_ROUTINE_MODEL")}
+                                             "VOYAGE_API_KEY", "ANTHROPIC_API_KEY", "PX_ROUTINE_MODEL",
+                                             "SEEDING_GITHUB_TOKEN", "SEEDING_REPO")}
     script_env["HQ_SLACK_CHANNEL"] = hq_channel
     script_env["SLACK_BOT_TOKEN"] = env("SLACK_BOT_TOKEN")      # jobs that DM receipts
     shared_env.write_text("".join(f"{k}={v}\n" for k, v in script_env.items() if v))
@@ -414,6 +418,7 @@ def main(runtime=False):
     write_script(DATA, "px_sleep.py", ["sleep"])
     write_script(DATA, "px_index.py", ["semantic-index"])
     write_script(DATA, "px_graph.py", ["graph-ingest"])
+    write_script(DATA, "px_audience.py", ["audience-sync"])
     write_script(DATA, "px_meetings.py", ["meetings-pending"])
     write_script(DATA, "px_tasks.py", ["tasks-remind"])
     write_script(DATA, "px_standup.py", ["standup-tick"])
@@ -693,6 +698,10 @@ def hq_jobs(deliver, learn_model):
         # Search by meaning: embed new memories / chats / documents (model-free; idle without a Voyage key).
         {"name": "px-index", "schedule": "*/10 * * * *", "prompt": "",
          "args": ["--deliver", deliver, "--no-agent", "--script", "px_index.py"]},
+        # Audience Seeding: newest GitHub snapshot (only downloads when the repo moved); once a day the
+        # summary + reports go to HQ and each client's Engage list to their channel. Model-free.
+        {"name": "px-audience", "schedule": "20 */2 * * *", "prompt": "",
+         "args": ["--deliver", deliver, "--no-agent", "--script", "px_audience.py"]},
         # Connected memory: the day's new facts -> Graphiti knowledge graph (after the memory digest).
         {"name": "px-graph", "schedule": "45 23 * * *", "prompt": "",
          "args": ["--deliver", deliver, "--no-agent", "--script", "px_graph.py"]},

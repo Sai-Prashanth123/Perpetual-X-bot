@@ -22,7 +22,7 @@ def handles(text):
 def client_accounts(conn):
     """{client: set(radar handles)} for clients that are live (have a channel) and have the radar on."""
     rows = conn.execute("""SELECT handle, radar_accounts, watch_accounts FROM clients
-                           WHERE active AND slack_channel IS NOT NULL AND radar_enabled""").fetchall()
+                           WHERE active AND slack_channel IS NOT NULL AND radar_enabled AND platform = 'x'""").fetchall()
     out = {}
     for r in rows:
         accts = set(handles(r["radar_accounts"]) or handles(r["watch_accounts"]))

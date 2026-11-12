@@ -117,6 +117,15 @@ def main(argv):
             from . import brain
             for line in brain.sleep_lines(conn):
                 print(line)
+        elif cmd == "audience-sync":
+            # Audience Seeding (GitHub): pull the newest snapshot, then the once-a-day Slack post (model-free).
+            from . import audience
+            try:
+                print(audience.sync(conn), file=sys.stderr)
+                for line in audience.post_daily(conn):
+                    print(f"posted {line}", file=sys.stderr)
+            except audience.AudienceError as e:
+                print(f"skipped {cmd}: {e}", file=sys.stderr)
         elif cmd == "brain-bootstrap":
             # One-time "childhood": score the whole conversation history so sleep can learn from it.
             from . import brain

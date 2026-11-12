@@ -579,3 +579,17 @@ CREATE TABLE IF NOT EXISTS lessons (
 );
 CREATE INDEX IF NOT EXISTS lessons_scope ON lessons(scope, active);
 CREATE INDEX IF NOT EXISTS lessons_fts ON lessons USING GIN (to_tsvector('english', rule));
+
+-- v20: task links/files handed to the owner; LinkedIn clients; Audience Seeding sync state.
+ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS links TEXT[];
+ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS files JSONB;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS platform TEXT NOT NULL DEFAULT 'x';
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS linkedin_url TEXT;
+CREATE TABLE IF NOT EXISTS audience_state (
+    id           INT PRIMARY KEY DEFAULT 1,
+    sha          TEXT,
+    synced_at    TIMESTAMPTZ,
+    newest_post  TIMESTAMPTZ,
+    trust_ok     BOOLEAN,
+    detail       TEXT
+);

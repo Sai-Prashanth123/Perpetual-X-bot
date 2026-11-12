@@ -38,7 +38,7 @@ def queue_studio(conn, p, who=None):
     except (TypeError, ValueError):
         count = 3
     wanted = [agency.norm_handle(h) for h in (p.get("clients") or []) if h]
-    active = agency.list_clients(conn)
+    active = agency.active_clients(conn)          # X content studio: X clients only
     targets = [c for c in active if c["slack_channel"] and (not wanted or c["handle"] in wanted)]
     queued_handles = {c["handle"] for c in targets}
     if wanted:

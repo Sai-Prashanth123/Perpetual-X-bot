@@ -485,6 +485,9 @@ def register(ctx):
     from perpetual_core import graph_memory, webcrawl
     webcrawl.register(ctx)       # crawl_site: whole websites free (Crawl4AI light), Firecrawl for JavaScript pages
     graph_memory.register(ctx)   # graph_recall: connected memory over time (Graphiti, built nightly)
+    from perpetual_core import audience, sharing
+    audience.register(ctx)       # Audience Seeding: engage lists, proven patterns, seed maps, reports
+    sharing.register(ctx)        # slack_send (anyone, with docs/files) + slack_api (owners: any Slack method)
     hooks.register(ctx)          # hook research + hook library (content studio)
     swipe.register(ctx)          # competitor swipe file
     media.register(ctx)          # quote cards, carousels, voice briefs          # the asking person's own Google / Notion, if they connected it

@@ -26,11 +26,11 @@ def _requester():
         return None
 
 
-def _channel_name(handle):
-    return ("x-" + re.sub(r"[^a-z0-9_-]", "", handle.lower()))[:80]
+def _channel_name(handle, platform="x"):
+    return (("li-" if platform == "linkedin" else "x-") + re.sub(r"[^a-z0-9_-]", "", handle.lower()))[:80]
 
 
-def _resolve_channel(given, handle):
+def _resolve_channel(given, handle, platform="x"):
     """Use the channel the user named (ID, #name or name), or create/reuse public #x-<handle>."""
     if given:
         ref = given.strip().lstrip("#")
@@ -48,7 +48,7 @@ def _resolve_channel(given, handle):
                 raise ValueError(f"#{info['name']} is private and I'm not in it. Type /invite @Agency Bot there first.")
             slackui.slack("conversations.join", channel=info["id"])
         return info["id"], info["name"], False
-    name = _channel_name(handle)
+    name = _channel_name(handle, platform)
     existing = _find_channel_by_name(name)
     if existing:
         if not existing.get("is_member"):
@@ -96,7 +96,29 @@ def apply_changes(summary):
     return "setting up in the background; I'll DM you when it's live"
 
 
+def client_add_linkedin(conn, p):
+    """A LinkedIn client: on the roster with a #li-<name> channel, run by HQ (no X agent or X jobs)."""
+    handle = re.sub(r"[^a-z0-9_]", "", agency.norm_handle(p.get("handle") or p.get("name") or ""))[:30]
+    if not handle:
+        raise ValueError("Give me a short id for the client (e.g. gilallouche) and their name.")
+    if not p.get("name"):
+        raise ValueError("What's the client's full name?")
+    channel_id, channel_name, created = _resolve_channel(p.get("channel"), handle, "linkedin")
+    notes = _invite(channel_id, [_requester()])
+    agency.upsert_client(conn, handle, display_name=p["name"], niche_topics=p.get("niche_topics") or "",
+                         timezone=p.get("timezone") or DEFAULT_TZ, slack_channel=channel_id)
+    conn.execute("""UPDATE clients SET platform = 'linkedin', linkedin_url = COALESCE(%s, linkedin_url),
+                    company = COALESCE(%s, company), radar_enabled = false, trend_enabled = false,
+                    added_by = COALESCE(added_by, %s) WHERE handle = %s""",
+                 (p.get("linkedin_url"), p.get("company"), _requester(), handle))
+    conn.commit()
+    return {"client": handle, "platform": "linkedin", "channel": f"<#{channel_id}>", "channel_created": created,
+            "notes": notes, "next": "LinkedIn client added: HQ handles tasks, memory and reports for them in that channel."}
+
+
 def client_add(conn, p):
+    if (p.get("platform") or "x").lower() == "linkedin":
+        return client_add_linkedin(conn, p)
     handle = agency.norm_handle(p.get("handle"))
     if not re.fullmatch(r"[a-z0-9_]{1,15}", handle):
         raise ValueError("Give me the client's X handle, e.g. @alexvacca.")
@@ -178,7 +200,8 @@ def client_channels(conn, p):
     done, failed = [], []
     for c in targets:
         try:
-            channel_id, name, created = _resolve_channel(p.get("channel") if p.get("handle") else None, c["handle"])
+            channel_id, name, created = _resolve_channel(p.get("channel") if p.get("handle") else None, c["handle"],
+                                                         c.get("platform") or "x")
             _invite(channel_id, [c["employee_slack"], _requester()])
             agency.upsert_client(conn, c["handle"], slack_channel=channel_id)
             if _requester():
@@ -197,7 +220,7 @@ def client_channels(conn, p):
 def run_package(conn, p):
     """Produce the weekly package now (article + promo QRTs + long tweet + extras) for some or all clients."""
     wanted = [agency.norm_handle(h) for h in (p.get("clients") or []) if h]
-    targets = [c for c in agency.list_clients(conn) if c["slack_channel"] and (not wanted or c["handle"] in wanted)]
+    targets = [c for c in agency.active_clients(conn) if c["slack_channel"] and (not wanted or c["handle"] in wanted)]
     skipped = [h for h in wanted if h not in {c["handle"] for c in targets}]
     who = _requester()
     for c in targets:
@@ -254,6 +277,8 @@ def client_list(conn, p):
         out.append({"client": c["handle"], "name": c["display_name"], "active": c["active"],
                     "channel": f"<#{c['slack_channel']}>" if c["slack_channel"] else None,
                     "run_by": f"<@{c['employee_slack']}>" if c["employee_slack"] else None,
+                    "platform": c.get("platform") or "x", "company": c.get("company"),
+                    "linkedin": c.get("linkedin_url"),
                     "niche": c["niche_topics"], "watching": c["watch_accounts"], "timezone": c["timezone"],
                     "x_connected": bool(conn_x)})
     return {"count": len(out), "clients": out}
@@ -278,16 +303,19 @@ def connect_x_link(conn, p):
 _S = {"type": "string"}
 TOOLS = [
     ("client_add", client_add,
-     "Add a new agency client and set everything up: checks the X handle, adds it to the scraping "
+     "Add a new agency client. platform 'linkedin' (LinkedIn-only clients): needs handle (short id), name, "
+     "optional linkedin_url, company; creates #li-<id>, HQ runs it, no X jobs. Default platform 'x': "
+     "checks the X handle, adds it to the scraping "
      "console, creates (or uses) its public Slack channel #x-<handle>, invites the employee and the "
      "requester, and starts the client's own agent (it learns their voice and says hello in the "
      "channel). Required: handle and niche_topics (specific phrases). "
      "Ask for anything missing before calling. Optional: employee (who runs it; default the whole team), channel (an existing channel the user made "
      "and invited the bot to), watch_accounts, avoid_accounts, timezone (default Asia/Kolkata), name.",
      {"handle": _S, "employee": _S, "niche_topics": _S, "watch_accounts": _S, "avoid_accounts": _S,
+      "platform": {"type": "string", "enum": ["x", "linkedin"]}, "linkedin_url": _S, "company": _S,
       "timezone": {**_S, "description": "IANA, e.g. Asia/Kolkata, Europe/London"}, "name": _S,
       "channel": {**_S, "description": "Existing channel (#name, name or ID). Omit to create #x-<handle>."}},
-     ["handle", "niche_topics"]),
+     ["handle"]),
     ("client_update", client_update,
      "Change a client's settings: niche_topics, watch_accounts, avoid_accounts, timezone, name, "
      "employee (who runs it), channel, or package (the weekly content package, e.g. "

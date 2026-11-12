@@ -98,8 +98,21 @@ def ensure_daily(conn, day, member_ids, slack=None):
     return row
 
 
+def _rt_links(text, links):
+    """Title plus a clickable link per attached doc (Google Doc, Canva, ...)."""
+    rt = _rt(text)
+    if links:
+        from . import sharing
+        els = rt[0]["elements"][0]["elements"]
+        for u in links[:5]:
+            k = sharing.kind(u)
+            els += [{"type": "text", "text": " · "},
+                    {"type": "link", "url": u, "text": sharing.google_label(u) if k == "google" else k.capitalize()}]
+    return rt
+
+
 def _item_fields(cols, task, title):
-    fields = [{"column_id": cols["name"], "rich_text": _rt(title)}] if cols.get("name") else []
+    fields = [{"column_id": cols["name"], "rich_text": _rt_links(title, task.get("links"))}] if cols.get("name") else []
     if task.get("owner_slack") and cols.get("assignee"):
         fields.append({"column_id": cols["assignee"], "user": [task["owner_slack"]]})
     if task.get("due") and cols.get("due"):

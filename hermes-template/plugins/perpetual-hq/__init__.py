@@ -234,6 +234,9 @@ def register(ctx):
     from perpetual_core import graph_memory, webcrawl
     webcrawl.register(ctx)       # crawl_site: whole websites free (Crawl4AI light), Firecrawl for JavaScript pages
     graph_memory.register(ctx)   # graph_recall: connected memory over time (Graphiti, built nightly)
+    from perpetual_core import audience, sharing
+    audience.register(ctx)       # Audience Seeding: engage lists, proven patterns, seed maps, reports
+    sharing.register(ctx)        # slack_send (anyone, with docs/files) + slack_api (owners: any Slack method)
     for action_id, callback in proactive.ACTIONS:      # Useful / Not now / Never
         ctx.register_slack_action_handler(action_id, callback)
     from . import studio_hq

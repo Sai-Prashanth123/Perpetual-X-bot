@@ -80,9 +80,13 @@ def resolve_owner(who, people=None):
 
 # ---------------------------------------------------------------- writes
 
-def add(conn, items, created_by=None, people=None, notify_owners=True, source="manual", source_ref=None):
-    """Add tasks: items = [{title, owner, due, client, notes}]. DMs each owner once with their new tasks."""
-    added, problems, per_owner = [], [], {}
+def add(conn, items, created_by=None, people=None, notify_owners=True, source="manual", source_ref=None,
+        share=None):
+    """Add tasks: items = [{title, owner, due, client, notes, links, files, access}]. Each owner is DMed once
+    with their new tasks, and gets the links (Google files shared with them in Drive) and files with them."""
+    from . import sharing
+    share = share or sharing.share_task
+    added, problems, per_owner, shared = [], [], {}, {}
     for it in items:
         title = (it.get("title") or "").strip()
         if not title:
@@ -94,22 +98,47 @@ def add(conn, items, created_by=None, people=None, notify_owners=True, source="m
             due = parse_due(it.get("due"))
         except ValueError:
             due, _ = None, problems.append({"title": title, "problem": f"couldn't read due date {it.get('due')!r}"})
+        given = it.get("links") or []
+        links = sharing.links_in(" ".join(given) if isinstance(given, list) else str(given), title, it.get("notes"))
+        files = [str(f) for f in (it.get("files") or []) if str(f).strip()]
         row = conn.execute(
-            """INSERT INTO team_tasks(title, owner_slack, owner_name, client, due, source, source_ref, notes, created_by)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
+            """INSERT INTO team_tasks(title, owner_slack, owner_name, client, due, source, source_ref, notes, created_by,
+                                      links, files)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::text[],%s::jsonb) RETURNING *""",
             (title[:500], oid, oname, (it.get("client") or None) and it["client"].lstrip("@").lower(), due,
-             it.get("source") or source, it.get("source_ref") or source_ref, it.get("notes"), created_by)).fetchone()
+             it.get("source") or source, it.get("source_ref") or source_ref, it.get("notes"), created_by,
+             links, json.dumps(files))).fetchone()
         added.append(row)
         if oid and oid != created_by:
             per_owner.setdefault(oid, []).append(row)
+            if links or files:
+                try:
+                    shared[row["id"]] = share(conn, row, oid, created_by, it.get("access") or "edit", people)
+                except Exception as e:  # noqa: BLE001 — the task exists; say what couldn't be shared
+                    problems.append({"title": title, "problem": f"couldn't share its links/files: {e}"})
     conn.commit()
     to_list(conn, added)
     if notify_owners:
         for oid, rows in per_owner.items():
             notify.dm([oid], "📝 New task" + ("s" if len(rows) > 1 else "") + " for you:\n"
-                      + "\n".join(line(r) for r in rows)
+                      + "\n".join(_dm_block(r, shared.get(r["id"])) for r in rows)
                       + "\nReply `done TASK-n` here when finished, or tell me if a date is wrong.")
-    return [view(r) for r in added], problems
+    return [dict(view(r), **({"shared": shared[r["id"]]} if r["id"] in shared else {})) for r in added], problems
+
+
+def _dm_block(r, result=None):
+    """A task in its owner's DM: the line, the notes, and every link / file that comes with it."""
+    from . import sharing
+    out = [line(r)]
+    if r.get("notes"):
+        out.append("   " + " ".join(str(r["notes"]).split())[:600])
+    if result:
+        out += sharing.dm_lines(result)
+    else:
+        for u in r.get("links") or []:
+            k = sharing.kind(u)
+            out.append(f"   🔗 <{u}|{sharing.google_label(u) if k == 'google' else k.capitalize()}>")
+    return "\n".join(out)
 
 
 def update(conn, task_code, by=None, status=None, due=None, owner=None, title=None, note=None, people=None):
@@ -155,8 +184,14 @@ def update(conn, task_code, by=None, status=None, due=None, owner=None, title=No
                   f"🚧 {row['owner_name'] or 'Someone'} is blocked on {code(row)} {row['title']}"
                   + (f": {note}" if note else "") + ". Can you help unblock it?")
     if owner and row["owner_slack"] and row["owner_slack"] != by:
-        notify.dm([row["owner_slack"]], f"📝 {code(row)} is now yours: {row['title']}"
-                  + (f" (due {row['due']:%a %d %b})" if row["due"] else ""))
+        result = None
+        if row.get("links") or row.get("files"):
+            try:
+                from . import sharing
+                result = sharing.share_task(conn, row, row["owner_slack"], by, "edit", people)
+            except Exception:  # noqa: BLE001 — the reassignment stands; the DM still carries the links
+                result = None
+        notify.dm([row["owner_slack"]], f"📝 {code(row)} is now yours:\n" + _dm_block(row, result))
     return view(row)
 
 
@@ -186,7 +221,8 @@ def _local_today(conn):
 def view(r):
     return {"code": code(r), "title": r["title"], "owner": r["owner_name"], "owner_id": r["owner_slack"],
             "client": r["client"], "due": r["due"].isoformat() if r["due"] else None, "status": r["status"],
-            "source": r["source"], "notes": r["notes"]}
+            "source": r["source"], "notes": r["notes"], "links": list(r.get("links") or []),
+            "files": len(r.get("files") or [])}
 
 
 def line(r, today=None):
@@ -197,7 +233,9 @@ def line(r, today=None):
         due = f" · due {r['due']:%a %d %b}" + (f" (*{late}d overdue*)" if late > 0 else " (today)" if late == 0 else "")
     client = f" · @{r['client']}" if r.get("client") else ""
     status = "" if r["status"] == "open" else f" · _{r['status']}_"
-    return f"• *{code(r)}* {r['title']}{client}{due}{status}"
+    extras = len(r.get("links") or []) + len(r.get("files") or [])
+    clip = f" · 🔗{extras}" if extras else ""
+    return f"• *{code(r)}* {r['title']}{client}{due}{status}{clip}"
 
 
 def listing(conn, owner_id=None, status="open", client=None, overdue=False, limit=50):
@@ -263,6 +301,9 @@ def task_add(params, **_):
     conn = ledger.connect()
     try:
         items = params.get("items") or [params]
+        if params.get("items"):           # links / files / access given once apply to every item that has none
+            items = [dict(it, **{k: params[k] for k in ("links", "files", "access") if params.get(k) and not it.get(k)})
+                     for it in items]
         added, problems = add(conn, items, created_by=_asker(), source=params.get("source") or "manual",
                               source_ref=params.get("source_ref"))
         return _ok(added=added, problems=problems)
@@ -304,16 +345,24 @@ def task_update(params, **_):
 
 
 _S = {"type": "string"}
-_ITEM = {"type": "object", "properties": {"title": _S, "owner": _S, "due": _S, "client": _S, "notes": _S},
+_LIST = {"type": "array", "items": _S}
+_ACCESS = {"type": "string", "enum": ["edit", "comment", "view"]}
+_ITEM = {"type": "object", "properties": {"title": _S, "owner": _S, "due": _S, "client": _S, "notes": _S,
+                                          "links": _LIST, "files": _LIST, "access": _ACCESS},
          "required": ["title"]}
 
 TOOLS = [
     ("task_add", task_add,
      "Add team tasks (one, or several with items). owner = a teammate's name, @handle, Slack id or email; "
      "due = YYYY-MM-DD, 'today', 'tomorrow', 'friday', 'in 3 days'. Owners get a DM. Use for 'add a task for …', "
-     "meeting action items (source 'meeting', source_ref = meeting id) and standup answers (source 'standup').",
-     {"title": _S, "owner": _S, "due": _S, "client": _S, "notes": _S,
-      "items": {"type": "array", "items": _ITEM}, "source": _S, "source_ref": _S}, []),
+     "meeting action items (source 'meeting', source_ref = meeting id) and standup answers (source 'standup'). "
+     "ALWAYS pass every doc, link and file the person mentions or attaches: links = URLs (Google Docs/Sheets/Slides/"
+     "Drive are shared with the owner in Drive, edit access by default; Canva/Figma/Notion/other links go in their "
+     "DM), files = Slack file ids/links or the saved path of a file they sent you (uploaded into the owner's DM). "
+     "access: edit (default) | comment | view. Then tell the person exactly what was shared (each added task's "
+     "'shared' notes), including any link they must open up themselves (e.g. Canva sharing settings).",
+     {"title": _S, "owner": _S, "due": _S, "client": _S, "notes": _S, "links": _LIST, "files": _LIST,
+      "access": _ACCESS, "items": {"type": "array", "items": _ITEM}, "source": _S, "source_ref": _S}, []),
     ("task_list", task_list,
      "List team tasks. owner: 'me' (default), a name, or 'all'. status: open (default: open/doing/blocked), "
      "done, all… Optional client, overdue=true.",

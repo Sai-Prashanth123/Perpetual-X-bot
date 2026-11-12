@@ -57,7 +57,9 @@ def list_clients(conn, include_inactive=False):
 
 
 def active_clients(conn):
-    return list_clients(conn)
+    """Active X clients: the ones with their own agent and X jobs. LinkedIn clients (platform 'linkedin')
+    are on the roster (list_clients) and run by HQ: tasks, memory, reports; no X scraping."""
+    return [c for c in list_clients(conn) if (c.get("platform") or "x") == "x"]
 
 
 def sync_clients(conn, clients):

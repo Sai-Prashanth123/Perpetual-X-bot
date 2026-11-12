@@ -26,7 +26,7 @@ def phrases(text):
 def client_topics(conn):
     """{client: [niche phrases]} for live clients (channel set) with the trend radar on."""
     rows = conn.execute("""SELECT handle, niche_topics FROM clients
-                           WHERE active AND slack_channel IS NOT NULL AND trend_enabled""").fetchall()
+                           WHERE active AND slack_channel IS NOT NULL AND trend_enabled AND platform = 'x'""").fetchall()
     out = {}
     for r in rows:
         topics = phrases(r["niche_topics"])[:MAX_PHRASES]
