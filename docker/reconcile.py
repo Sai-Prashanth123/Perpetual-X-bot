@@ -239,6 +239,8 @@ def main(runtime=False):
         # Audience Seeding (private GitHub repo, read-only token): daily engage lists, patterns, reports.
         "SEEDING_GITHUB_TOKEN": env("SEEDING_GITHUB_TOKEN"), "SEEDING_REPO": env("SEEDING_REPO"),
         "HQ_SLACK_CHANNEL": env("HQ_SLACK_CHANNEL"),
+        # Everyone in every client channel by default (new channels + client_channel_members).
+        "CLIENT_CHANNEL_MEMBERS": env("CLIENT_CHANNEL_MEMBERS"),
     }
     model = env("PX_MODEL", "claude-sonnet-5-5")
     learn_model = env("PX_LEARN_MODEL", "claude-opus-5-5")

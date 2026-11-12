@@ -71,16 +71,63 @@ def _find_channel_by_name(name):
             return None
 
 
-def _invite(channel_id, user_ids):
-    ids = [u for u in dict.fromkeys(user_ids) if u]
-    if not ids:
-        return []
-    try:
-        slackui.slack("conversations.invite", channel=channel_id, users=",".join(ids))
-    except slackui.SlackError as e:
-        if "already_in_channel" not in str(e) and "cant_invite_self" not in str(e):
-            return [f"couldn't invite everyone ({e})"]
-    return []
+def channel_team():
+    """Who is in every client channel by default (CLIENT_CHANNEL_MEMBERS, else the owners)."""
+    from perpetual_core.settings import env
+    raw = env("CLIENT_CHANNEL_MEMBERS") or env("OWNER_SLACK_IDS") or ""
+    return [u.strip() for u in raw.split(",") if u.strip()]
+
+
+def _invite(channel_id, user_ids, team=True):
+    """Invite the default channel team plus these people (one call each: one bad id must not block the rest)."""
+    ids = [u for u in dict.fromkeys((channel_team() if team else []) + list(user_ids or [])) if u]
+    notes = []
+    for uid in ids:
+        try:
+            slackui.slack("conversations.invite", channel=channel_id, users=uid)
+        except slackui.SlackError as e:
+            if not any(x in str(e) for x in ("already_in_channel", "cant_invite_self")):
+                notes.append(f"couldn't invite <@{uid}> ({e})")
+    return notes
+
+
+def set_channel_members(channel_id, kick_others=True):
+    """Make the channel's people exactly the default team (+ the bot): invite who's missing, remove the rest."""
+    me = slackui.slack("auth.test").get("user_id")
+    team = set(channel_team())
+    current, cursor = set(), None
+    while True:
+        data = slackui.slack("conversations.members", channel=channel_id, limit=500, cursor=cursor)
+        current |= set(data.get("members") or [])
+        cursor = (data.get("response_metadata") or {}).get("next_cursor")
+        if not cursor:
+            break
+    notes = _invite(channel_id, sorted(team - current), team=False)
+    removed = []
+    if kick_others:
+        for uid in sorted(current - team - {me}):
+            try:
+                slackui.slack("conversations.kick", channel=channel_id, user=uid)
+                removed.append(uid)
+            except slackui.SlackError as e:
+                notes.append(f"couldn't remove <@{uid}> ({e})")
+    return {"added": sorted(team - current), "removed": removed, "notes": notes}
+
+
+def client_channel_members(conn, p):
+    """Owners: set every client channel (or one) to exactly the default team."""
+    from perpetual_core import guard
+    if _requester() and _requester() not in guard.owners():
+        raise ValueError("Only an owner can change who is in the client channels.")
+    rows = agency.list_clients(conn)
+    if p.get("handle"):
+        rows = [c for c in rows if c["handle"] == agency.norm_handle(p["handle"])]
+    out = []
+    for c in rows:
+        if c["slack_channel"]:
+            r = set_channel_members(c["slack_channel"], kick_others=p.get("kick_others", True) is not False)
+            out.append({"client": c["handle"], "channel": f"<#{c['slack_channel']}>", **r})
+    return {"team": [f"<@{u}>" for u in channel_team()], "channels": out}
 
 
 def apply_changes(summary):
@@ -302,6 +349,11 @@ def connect_x_link(conn, p):
 
 _S = {"type": "string"}
 TOOLS = [
+    ("client_channel_members", client_channel_members,
+     "Owners: make client channels contain exactly the default team (CLIENT_CHANNEL_MEMBERS: Sai, Naga, Shravya) "
+     "plus the bot: invites who's missing and removes everyone else (kick_others=false to only add). "
+     "Optional handle for one client; default all client channels.",
+     {"handle": _S, "kick_others": {"type": "boolean"}}, []),
     ("client_add", client_add,
      "Add a new agency client. platform 'linkedin' (LinkedIn-only clients): needs handle (short id), name, "
      "optional linkedin_url, company; creates #li-<id>, HQ runs it, no X jobs. Default platform 'x': "
