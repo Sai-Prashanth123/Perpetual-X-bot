@@ -292,6 +292,196 @@ def _fmt_engage(e):
     return "\n".join(lines)
 
 
+def client_segments():
+    """{client handle (lower): [segments]} from the repo's config/segments.yaml."""
+    d = current_dir()
+    try:
+        import yaml
+        cfg = yaml.safe_load((d / "config" / "segments.yaml").read_text(encoding="utf-8")) if d else {}
+    except Exception:  # noqa: BLE001
+        cfg = {}
+    return {k.lower(): v for k, v in ((cfg or {}).get("client_segments") or {}).items()}
+
+
+def _pct(x):
+    return f"{x * 100:.0f}%" if x is not None else "?"
+
+
+def _rel(x):
+    return f"{x:.1f}× usual" if x is not None else "?"
+
+
+def brief(client, con=None, engage_n=10):
+    """Everything one client's team needs today, as data: engage list, what works / doesn't, audience niche,
+    last 7 days best and worst."""
+    own = con is None
+    con = con or _db()
+    try:
+        key = _client_key(con, client)
+        lk = key.lower()
+        out = {"client": key, "segments": client_segments().get(lk, [])}
+        day = con.execute("SELECT max(list_date) FROM engage_list WHERE client = ?", [key]).fetchone()[0]
+        out["engage"] = _rows(con, """SELECT list_rank, url, author, seg, text, reason FROM engage_list
+                                      WHERE client = ? AND list_date = ? ORDER BY list_rank LIMIT ?""",
+                              (key, day, engage_n)) if day else []
+        out["engage_date"] = day
+        out["working"] = _rows(con, """SELECT dim, value, posts, rel, rel_lo, rel_hi FROM content_ci
+                                       WHERE lower(client) = ? AND status = 'proven better' ORDER BY rel DESC LIMIT 6""", (lk,))
+        out["not_working"] = _rows(con, """SELECT dim, value, posts, rel, rel_lo, rel_hi FROM content_ci
+                                           WHERE lower(client) = ? AND status = 'proven worse' ORDER BY rel LIMIT 6""", (lk,))
+        out["habits"] = _rows(con, """SELECT dim, value, status, direction, effect, weeks_cleared, reach_only FROM pattern_memory
+                                      WHERE lower(client) = ? AND status IN ('habit','emerging','fading')
+                                      ORDER BY CASE status WHEN 'habit' THEN 0 WHEN 'emerging' THEN 1 ELSE 2 END""", (lk,))
+        week = _rows(con, """SELECT url, format, hook, topic, view_count, like_count, rel_perf, niche_share, text
+                             FROM post_perf WHERE lower(client) = ? AND created_at > now() - INTERVAL 7 DAY
+                             AND rel_perf IS NOT NULL ORDER BY rel_perf DESC""", (lk,))
+        out["week"] = {"posts": len(week), "best": [w for w in week if (w["rel_perf"] or 0) >= 1][:2],
+                       "worst": [w for w in week if (w["rel_perf"] or 0) < 1][-2:]}
+        out["niche"] = _rows(con, """SELECT week, engagers, niche_share, "group" FROM track_weekly
+                                     WHERE lower(client) = ? ORDER BY week DESC LIMIT 2""", (lk,))
+        return out
+    finally:
+        if own:
+            con.close()
+
+
+def brief_text(b):
+    """Slack message for a client channel (mrkdwn)."""
+    L = [f"*📡 Audience Seeding: @{b['client']} today*"
+         + (f" · audience: {' + '.join(s.upper() for s in b['segments'])}" if b["segments"] else "")]
+    if b["niche"]:
+        n = b["niche"][0]
+        prev = b["niche"][1] if len(b["niche"]) > 1 else None
+        trend = f" (was {_pct(prev['niche_share'])})" if prev else ""
+        L.append(f"*Audience niche:* {_pct(n['niche_share'])} of last week's {n['engagers']} engagers are in the niche{trend}")
+    if b["working"] or [h for h in b["habits"] if h["direction"] == "better"]:
+        L.append("*✅ Working (proven):*")
+        L += [f"• {w['dim']}: *{w['value']}*: {_rel(w['rel'])} ({w['posts']} posts, range {w['rel_lo']:.1f}–{w['rel_hi']:.1f})"
+              for w in b["working"]]
+        L += [f"• {h['dim']}: *{h['value']}*: habit for {h['weeks_cleared']} weeks" for h in b["habits"]
+              if h["status"] == "habit" and h["direction"] == "better" and not h["reach_only"]
+              and (h["dim"], h["value"]) not in {(w["dim"], w["value"]) for w in b["working"]}]
+    if b["not_working"] or [h for h in b["habits"] if h["direction"] == "worse"]:
+        L.append("*❌ Not working (proven):*")
+        L += [f"• {w['dim']}: *{w['value']}*: {_rel(w['rel'])} ({w['posts']} posts)" for w in b["not_working"]]
+        L += [f"• {h['dim']}: *{h['value']}*: {h['status']}" for h in b["habits"] if h["direction"] == "worse"
+              and (h["dim"], h["value"]) not in {(w["dim"], w["value"]) for w in b["not_working"]}]
+    if not (b["working"] or b["not_working"] or b["habits"]):
+        L.append("_No proven patterns yet (needs more posts): keep testing, nothing to lock in._")
+    wk = b["week"]
+    if wk["posts"]:
+        L.append(f"*Last 7 days ({wk['posts']} posts):*")
+        L += [f"• 🔝 <{p['url']}|{p['format'] or 'post'} · {p['hook'] or ''}> {_rel(p['rel_perf'])}" for p in wk["best"]]
+        L += [f"• 🔻 <{p['url']}|{p['format'] or 'post'} · {p['hook'] or ''}> {_rel(p['rel_perf'])}" for p in wk["worst"]]
+    if b["engage"]:
+        L.append(f"*🎯 Engage today ({b['engage_date']}): reply by hand, in {b['client']}'s voice:*")
+        for p in b["engage"]:
+            L.append(f"{p['list_rank']}. <{p['url']}|@{p['author']}> · {p['seg'] or ''}: "
+                     + " ".join((p["text"] or "").split())[:110]
+                     + (f"\n      _why: {p['reason'][:110]}_" if p.get("reason") else ""))
+    L.append("_Paste any X post link here and ask me “who engages with this?” for the full audience breakdown._")
+    return "\n".join(L)
+
+
+def _who(con, usernames):
+    """{username(lower): {segment, confidence, seed_rank, seed_seg, core, followers}} for these accounts."""
+    names = list({u.lower() for u in usernames if u})
+    if not names:
+        return {}
+    out = {u: {} for u in names}
+    for r in _rows(con, "SELECT lower(username) u, segment, also, confidence FROM account_segments WHERE lower(username) IN "
+                        f"({','.join('?' * len(names))})", names):
+        out[r["u"]].update(segment=r["segment"], also=r["also"], confidence=round(r["confidence"] or 0, 2))
+    for r in _rows(con, "SELECT lower(username) u, min(rank) r, arg_min(seg, rank) s FROM seed_map WHERE lower(username) IN "
+                        f"({','.join('?' * len(names))}) GROUP BY 1", names):
+        out[r["u"]].update(seed_rank=r["r"], seed_seg=r["s"])
+    for r in _rows(con, "SELECT lower(username) u, core_segment, core_rank FROM core_accounts WHERE lower(username) IN "
+                        f"({','.join('?' * len(names))})", names):
+        out[r["u"]].update(core=f"{r['core_segment']} #{r['core_rank']}")
+    for r in _rows(con, "SELECT lower(handle) u, followers_count f, description d FROM profiles WHERE lower(handle) IN "
+                        f"({','.join('?' * len(names))})", names):
+        out[r["u"]].update(followers=r["f"], bio=(r["d"] or "")[:140])
+    return out
+
+
+def _fetch_post(tid):
+    from . import console
+    _, items = console.run_actor("tweet-detail", {"tweet_id": tid, "limit": 60, "max_pages": 2})
+    return [console.compact_tweet(t) for t in items]
+
+
+def post_analysis(url, fetch=None):
+    """A pasted X post, end to end: who wrote it (niche, seed map), how it did vs usual (our clients' posts),
+    who engaged and how many are our niche, the in-niche repliers worth engaging back, which of our clients
+    it fits and what's proven for them, and whether it's already on someone's Engage list."""
+    from .console import _tweet_id
+    tid = _tweet_id(url)
+    fetch = fetch or _fetch_post
+    con = _db()
+    try:
+        out = {"tweet_id": tid}
+        perf = _rows(con, """SELECT client, url, created_at, format, hook, topic, length, day_slot, view_count, like_count,
+                             reply_count, retweet_count, bookmark_count, xscore, baseline, rel_perf, niche_share,
+                             engagers_captured, engagers_in_seed FROM post_perf WHERE tweet_id = ?""", (tid,))
+        out["our_client_post"] = perf[0] if perf else None
+        live = _rows(con, "SELECT client, format, hook, expected_vs_usual, scored_at FROM live_preds WHERE tweet_id = ?", (tid,))
+        out["live_prediction"] = live[0] if live else None
+        out["on_engage_lists"] = _rows(con, """SELECT list_date, client, list_rank, reason FROM engage_list
+                                               WHERE tweet_id = ? ORDER BY list_date DESC LIMIT 5""", (tid,))
+        try:
+            tweets = fetch(tid)
+        except Exception as e:  # noqa: BLE001 — the snapshot part still answers
+            tweets, out["live_fetch_error"] = [], str(e)[:200]
+        root = next((t for t in tweets if t.get("id") == tid), None)
+        replies = [t for t in tweets if t.get("id") != tid]
+        out["post"] = root
+        author = (root or {}).get("by") or (perf[0]["client"] if perf else None)
+        who = _who(con, [author] + [r.get("by") for r in replies])
+        if author:
+            out["author"] = {"username": author, **who.get(author.lower(), {})}
+        engaged = []
+        for r in replies:
+            info = who.get((r.get("by") or "").lower(), {})
+            engaged.append({"username": r.get("by"), "likes": r.get("likes"), "text": (r.get("text") or "")[:160],
+                            "url": r.get("url"), **{k: info.get(k) for k in ("segment", "seed_rank", "seed_seg", "core",
+                                                                               "followers")}})
+        niche = [e for e in engaged if e.get("segment") and e["segment"] != "none"]
+        out["engagers"] = {"replies_seen": len(engaged), "in_niche": len(niche),
+                           "niche_share": round(len(niche) / len(engaged), 2) if engaged else None,
+                           "by_segment": {s: sum(1 for e in niche if e["segment"] == s) for s in {e["segment"] for e in niche}}}
+        out["engage_back"] = sorted(niche, key=lambda e: (e.get("seed_rank") or 99999, -(e.get("likes") or 0)))[:10]
+        out["unknown_repliers"] = [e["username"] for e in engaged if not e.get("segment")][:15]
+        seg = (out.get("author") or {}).get("segment")
+        segs = client_segments()
+        fits = [c for c, ss in segs.items() if seg and seg in ss] if seg and seg != "none" else []
+        try:                                   # only our current customers
+            from . import agency
+            c2 = ledger.connect()
+            try:
+                current = {c["handle"].lower() for c in agency.active_clients(c2)}
+            finally:
+                c2.close()
+            fits = [c for c in fits if c.lower() in current]
+        except Exception:  # noqa: BLE001
+            pass
+        out["fits_clients"] = fits
+        target = (perf[0]["client"] if perf else None) or (fits[0] if fits else None)
+        if target:
+            b = brief(target, con, engage_n=0)
+            out["client_playbook"] = {"client": b["client"], "working": b["working"], "not_working": b["not_working"],
+                                      "habits": b["habits"]}
+            if perf:
+                p = perf[0]
+                out["vs_proven"] = _rows(con, """SELECT dim, value, status, rel FROM content_ci WHERE lower(client) = lower(?)
+                                                 AND ((dim = 'format' AND value = ?) OR (dim = 'hook' AND value = ?)
+                                                   OR (dim = 'topic' AND value = ?) OR (dim = 'length' AND value = ?)
+                                                   OR (dim = 'day_slot' AND value = ?))""",
+                                         (p["client"], p["format"], p["hook"], p["topic"], p["length"], p["day_slot"]))
+        return out
+    finally:
+        con.close()
+
+
 def summary_text(conn):
     f = freshness(conn)
     con = _db()
@@ -317,6 +507,20 @@ def summary_text(conn):
                      + (f" (⚠️ {len(warn)} warning{'s' if len(warn) > 1 else ''})" if warn else ""))
     if modes:
         lines.append("• Fast-learning mode: " + ", ".join(f"@{m['client']} ({m['mode']})" for m in modes))
+    try:
+        from . import agency
+        live = [c["handle"] for c in agency.active_clients(conn) if c.get("slack_channel")]
+    except Exception:  # noqa: BLE001
+        live = []
+    for h in live:
+        try:
+            b = brief(h, engage_n=0)
+        except Exception:  # noqa: BLE001
+            continue
+        good = ", ".join(f"{w['dim']} {w['value']}" for w in b["working"][:2]) or "nothing proven yet"
+        bad = ", ".join(f"{w['dim']} {w['value']}" for w in b["not_working"][:2]) or "nothing"
+        niche = f"niche {_pct(b['niche'][0]['niche_share'])}" if b["niche"] else "niche ?"
+        lines.append(f"• @{b['client']}: ✅ {good} · ❌ {bad} · {niche} · {b['week']['posts']} posts this week")
     lines.append("Full reports attached. Ask me anything about it: “who should Alex reply to today?”, "
                  "“what's proven for Michel?”, “show the 2B tracking”.")
     return "\n".join(lines)
@@ -356,10 +560,11 @@ def post_daily(conn, slack=None, upload=None, today=None):
             e = engage(c["handle"], day=latest)
         except AudienceError:
             continue
-        if e["posts"]:
-            slack("chat.postMessage", channel=c["slack_channel"], text=_fmt_engage(e), unfurl_links=False,
+        b = brief(c["handle"])
+        if e["posts"] or b["working"] or b["not_working"] or b["week"]["posts"]:
+            slack("chat.postMessage", channel=c["slack_channel"], text=brief_text(b), unfurl_links=False,
                   unfurl_media=False)
-            posted.append(f"@{c['handle']}: {len(e['posts'])} posts to engage")
+            posted.append(f"@{c['handle']}: brief + {len(b['engage'])} posts to engage")
     conn.execute("UPDATE audience_state SET posted_day = %s WHERE id = 1", (today,))
     conn.commit()
     return posted
@@ -407,6 +612,18 @@ TOOLS = [
      "engage_coverage, post_perf, content_ci, pattern_memory, pattern_history, learning_mode, live_preds, "
      "seed_map, core_accounts, account_segments, profiles, track_weekly, track_reply_back, proof, trust_checks, "
      "kpis. No sql = list tables and columns.", {"sql": _S}, []),
+    ("audience_post", _tool(lambda p: post_analysis(p["url"])),
+     "Audience Seeding, end to end for one X post (paste the link): who wrote it (niche segment, seed-map rank, "
+     "core account), how it did vs the client's usual (our clients' posts: format/hook/topic vs what's proven), "
+     "who engaged and what share is our niche (Tech/B2B/AI), the in-niche repliers worth engaging back (best "
+     "seed rank first), which of our clients it fits and their proven playbook, live prediction, and whether "
+     "it's on an Engage list. Use whenever someone pastes an x.com/twitter.com status link and asks about it "
+     "(or just pastes it). Explain it plainly: audience, how they'll interact, what to do next.",
+     {"url": _S}, ["url"]),
+    ("audience_brief", _tool(lambda p: brief(p["client"], engage_n=int(p.get("engage") or 10))),
+     "Audience Seeding daily brief for one client: what's working and not working (proven), habits, audience "
+     "niche share, last 7 days best/worst posts, and today's engagers to interact with.",
+     {"client": _S, "engage": {"type": "integer"}}, ["client"]),
     ("audience_status", _tool(lambda p: {"tables": list(tables())}),
      "Audience Seeding: how fresh the data is, last sync, trust checks.", {}, []),
 ]

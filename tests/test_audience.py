@@ -56,10 +56,12 @@ def make_snapshot(path):
     con.execute("CREATE TABLE learning_mode(client VARCHAR, mode VARCHAR, signals VARCHAR)")
     con.execute("INSERT INTO learning_mode VALUES ('Kenny_GTM','normal','')")
     con.execute("""CREATE TABLE post_perf(client VARCHAR, tweet_id VARCHAR, url VARCHAR, created_at TIMESTAMPTZ, text VARCHAR,
-                   format VARCHAR, hook VARCHAR, topic VARCHAR, view_count BIGINT, like_count BIGINT, reply_count BIGINT,
-                   xscore DOUBLE)""")
-    con.execute("INSERT INTO post_perf VALUES ('Kenny_GTM','p1','https://x.com/k/1',now(),'hi','thread','question','gtm',1000,10,2,5.0)")
-    con.execute("""CREATE TABLE live_preds(tweet_id VARCHAR, client VARCHAR, created_at TIMESTAMPTZ, format VARCHAR, hook VARCHAR,
+                   format VARCHAR, hook VARCHAR, topic VARCHAR, length VARCHAR, day_slot VARCHAR, view_count BIGINT,
+                   like_count BIGINT, reply_count BIGINT, retweet_count BIGINT, bookmark_count BIGINT, xscore DOUBLE,
+                   baseline DOUBLE, rel_perf DOUBLE, niche_share DOUBLE, engagers_captured BIGINT, engagers_in_seed BIGINT)""")
+    con.execute("""INSERT INTO post_perf VALUES ('Kenny_GTM','p1','https://x.com/k/1',now(),'hi','thread','question','gtm',
+                   'short','1st',1000,10,2,1,3,5.0,2.5,2.0,0.4,10,4)""")
+    con.execute("""CREATE TABLE live_preds(tweet_id VARCHAR, client VARCHAR, created_at TIMESTAMPTZ, scored_at TIMESTAMPTZ, format VARCHAR, hook VARCHAR,
                    expected_vs_usual DOUBLE)""")
     con.execute("""CREATE TABLE track_weekly(client VARCHAR, "group" VARCHAR, week TIMESTAMP, engagers BIGINT,
                    niche_share DOUBLE, period VARCHAR)""")
@@ -139,6 +141,18 @@ def main():
     check(kp and "Engage today" in kp[0]["text"] and "x.com/a1" in kp[0]["text"], "client channel gets its Engage list")
     check(audience.post_daily(conn, slack=lambda *a, **k: {}, upload=lambda *a, **k: []) == [], "only once a day")
     check(any("@kenny_gtm" in d for d in done), "post_daily reports what it posted")
+
+    # --- a pasted post: author niche, engagers in niche, who to engage back
+    fake = lambda tid: [{"id": tid, "by": "a1", "likes": 5, "text": "root"},
+                        {"id": "r1", "by": "a1", "likes": 2, "text": "self"},
+                        {"id": "r2", "by": "stranger", "likes": 0, "text": "hi"}]
+    r = audience.post_analysis("https://x.com/a1/status/123456789", fetch=fake)
+    check(r["author"]["segment"] == "b2b" and r["author"]["seed_rank"] == 7, "pasted post: author niche + seed rank")
+    check(r["engagers"]["replies_seen"] == 2 and r["engagers"]["in_niche"] == 1 and r["engage_back"][0]["username"] == "a1"
+          and r["unknown_repliers"] == ["stranger"], "pasted post: engagers split by niche, who to engage back")
+    b = audience.brief("Kenny_GTM")
+    t = audience.brief_text(b)
+    check("Working" in t and "hook: *question*" in t and "Engage today" in t, "client brief: what works + engage list")
 
     # --- LinkedIn clients are on the roster but not in X jobs
     from perpetual_core import agency

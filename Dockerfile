@@ -26,7 +26,7 @@ RUN uv venv --quiet --python /opt/hermes/.venv/bin/python /opt/graphiti \
     || echo "graphiti not installed; connected memory off"
 RUN uv pip install --quiet --python /opt/hermes/.venv/bin/python "langfuse==4.15.2" || echo "langfuse SDK not installed"
 # Audience Seeding snapshot (read-only DuckDB file from the GitHub repo)
-RUN uv pip install --quiet --python /opt/hermes/.venv/bin/python "duckdb>=1.1" pytz || echo "duckdb not installed"
+RUN uv pip install --quiet --python /opt/hermes/.venv/bin/python "duckdb>=1.1" pytz pyyaml || echo "duckdb not installed"
 # Quote cards and carousels need real fonts.
 RUN (apt-get update -qq && apt-get install -y -qq --no-install-recommends fonts-dejavu-core \
      && rm -rf /var/lib/apt/lists/*) || echo "fonts-dejavu-core not installed; media falls back to the default font"
