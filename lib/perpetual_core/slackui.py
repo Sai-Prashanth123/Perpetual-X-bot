@@ -29,7 +29,7 @@ class SlackError(RuntimeError):
 
 
 FORM_METHODS = {"chat.getPermalink", "conversations.replies", "conversations.history", "conversations.info",
-                "users.info", "files.info"}
+                "users.info", "files.info", "conversations.members", "conversations.list", "auth.test"}
 
 
 def slack(method, **payload):
