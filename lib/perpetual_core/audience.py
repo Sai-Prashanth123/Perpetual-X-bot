@@ -364,7 +364,8 @@ def brief_text(b):
     if b["not_working"] or [h for h in b["habits"] if h["direction"] == "worse"]:
         L.append("*❌ Not working (proven):*")
         L += [f"• {w['dim']}: *{w['value']}*: {_rel(w['rel'])} ({w['posts']} posts)" for w in b["not_working"]]
-        L += [f"• {h['dim']}: *{h['value']}*: {h['status']}" for h in b["habits"] if h["direction"] == "worse"
+        L += [f"• {h['dim']}: *{h['value']}*: " + ("consistently worse" if h["status"] == "habit" else f"worse ({h['status']})")
+              for h in b["habits"] if h["direction"] == "worse"
               and (h["dim"], h["value"]) not in {(w["dim"], w["value"]) for w in b["not_working"]}]
     if not (b["working"] or b["not_working"] or b["habits"]):
         L.append("_No proven patterns yet (needs more posts): keep testing, nothing to lock in._")
