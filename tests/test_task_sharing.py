@@ -191,6 +191,39 @@ def main():
     check(items[1]["due"] == "friday" and items[2]["due"] == "tomorrow", "due dates per item")
     check(len(tasks.split_items("1) build this 2) build that link: https://x.com/a 3) check y")[1]) == 3,
           "numbered items on one line are split too")
+    # --- AI splitting (any format): the model's answer is checked against the message
+    class FakeResp:
+        def __init__(self, data):
+            self.stop_reason = "end_turn"
+            self.content = [type("B", (), {"type": "text", "text": json.dumps(data)})()]
+
+    class FakeClient:
+        def __init__(self, data):
+            self.messages = type("M", (), {"create": lambda _s, **kw: FakeResp(data)})()
+
+    prose = ("[The user sent a document: 'pricing-deck.pdf'. It is saved at: " + str(brief) + ". Its text is not "
+             "inlined here.] hey can shravya redo the newsletter with this " + DOC + " and ravi make a carousel out "
+             "of the deck by monday, also someone check " + CANVA)
+    fake = {"tasks": [
+        {"title": "Redo the newsletter", "owner": "Shravya K", "due": "", "links": [DOC], "files": [], "notes": ""},
+        {"title": "Make a carousel from the deck", "owner": "Ravi T", "due": "2026-11-16", "links": [],
+         "files": ["pricing-deck.pdf"], "notes": ""},
+        {"title": "Check the design", "owner": "", "due": "", "links": [CANVA, "https://evil.example/x"],
+         "files": ["not-attached.zip"], "notes": ""}]}
+    got = tasks.ai_split(prose, "UOWNER", PEOPLE, client=FakeClient(fake))
+    check([g["owner"] for g in got] == ["USHR", "UNOMAIL", "UOWNER"], "AI split: owners resolved to teammates (else sender)")
+    check(got[0]["links"] == [DOC] and got[2]["links"] == [CANVA], "AI split: only links that are really in the message")
+    check(got[1]["files"] == [str(brief)] and got[2]["files"] == [], "AI split: files mapped to attachments, made-up ones dropped")
+    check(got[1]["due"] == "2026-11-16", "AI split: due date kept")
+    dropped = tasks.ai_split(prose, "UOWNER", PEOPLE, client=FakeClient({"tasks": [
+        {"title": "Do everything", "owner": "", "due": "", "links": [], "files": [], "notes": ""}]}))
+    check(set(dropped[0]["links"]) == {DOC, CANVA} and dropped[0]["files"] == [str(brief)],
+          "AI split: nothing lost (dropped links/files go to the tasks)")
+
+    class Broken:
+        messages = type("M", (), {"create": lambda _s, **kw: (_ for _ in ()).throw(RuntimeError("down"))})()
+    check(tasks.ai_split(prose, "UOWNER", PEOPLE, client=Broken()) is None, "AI down → None (regex parser takes over)")
+
     from perpetual_core import connections
     connections.current_user = lambda: "UOWNER"
     import perpetual_core.slackui as slackui

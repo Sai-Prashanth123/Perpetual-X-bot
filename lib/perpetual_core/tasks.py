@@ -84,7 +84,7 @@ def resolve_owner(who, people=None):
 # ---------------------------------------------------------------- a whole message → tasks
 
 # Attachment notes Hermes puts into the message ("[The user sent a document: 'brief.pdf'. It is saved at: /x]")
-_ATTACH = re.compile(r"\[(?:The user sent|User sent)[^\]]*?(?:'(?P<name>[^']+)')?[^\]]*?saved at: "
+_ATTACH = re.compile(r"\[(?:The user sent|User sent)[^\]']*(?:'(?P<name>[^']+)')?[^\]]*?saved at: "
                      r"(?P<path>\S+?)(?:\.(?=\s)|\](?=\s|$)|$)[^\]]*\]?", re.I)
 _MARK = re.compile(r"^\s*(?:\(?\d{1,2}\s*[).:\-]|[-•*▪◦·]|\[\s?\]|step\s*\d+\s*[:.)-]?)\s+", re.I)
 _INLINE = re.compile(r"(?:(?<=\s)|^)\(?(\d{1,2})[).]\s+")
@@ -178,6 +178,109 @@ def parse_message(text, default_owner=None, people=None, files=None):
         for i in (hits if hits else range(len(items))):
             items[i]["files"].append(path)
     return items
+
+
+_AI_SCHEMA = {
+    "type": "object",
+    "properties": {"tasks": {"type": "array", "items": {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "owner": {"type": "string"},
+            "due": {"type": "string"},
+            "links": {"type": "array", "items": {"type": "string"}},
+            "files": {"type": "array", "items": {"type": "string"}},
+            "notes": {"type": "string"},
+        },
+        "required": ["title", "owner", "due", "links", "files", "notes"],
+        "additionalProperties": False}}},
+    "required": ["tasks"],
+    "additionalProperties": False,
+}
+
+
+def ai_split(text, default_owner=None, people=None, files=None, client=None):
+    """Any format → task items, by a small model (structured JSON), then checked against the message:
+    links must appear in it, files must be ones that were attached, owners must be real teammates.
+    None when the model isn't available (caller falls back to parse_message)."""
+    import json as _json
+    from datetime import date as _date
+    from . import sharing, slackui
+    from .settings import env
+    if client is None:
+        if not env("ANTHROPIC_API_KEY"):
+            return None
+        import anthropic
+        client = anthropic.Anthropic(api_key=env("ANTHROPIC_API_KEY"), timeout=45, max_retries=1)
+    everyone = people if people is not None else slackui.people()
+    attached = attachments_in(text) + [(str(f).rsplit("/", 1)[-1], str(f)) for f in (files or [])]
+    body = _ATTACH.sub(" ", text or "").strip()
+    sender = next((p["real_name"] or p["name"] for p in everyone if p["id"] == default_owner), None)
+    today = _date.today()
+    team = ", ".join(sorted({p["real_name"] or p["name"] for p in everyone if p.get("real_name") or p.get("name")}))
+    prompt = (
+        f"Today is {today:%A %Y-%m-%d}. The message below was sent by {sender or 'a teammate'} to the agency's "
+        f"task bot. Teammates: {team}.\n"
+        f"Attached files: {', '.join(n for n, _ in attached) or 'none'}.\n\n"
+        "Turn it into tasks, whatever its format (numbered, bullets, prose, mixed, typos):\n"
+        "- One task per distinct thing someone has to do. Don't split one job into steps, don't merge separate jobs.\n"
+        "- title: short imperative, without URLs, owner names or dates.\n"
+        "- owner: the teammate's full name exactly as in the list if the message gives it to someone, else ''.\n"
+        "- due: YYYY-MM-DD if a date/day is given for it ('tomorrow', 'by friday', 'EOD'), else ''.\n"
+        "- links: every URL that belongs to THIS task, copied exactly. A URL that clearly applies to every task "
+        "goes on every task.\n"
+        "- files: names of the attached files that belong to THIS task ('this pdf', 'the deck', or the name). If "
+        "it's unclear and there is one task, put them on it; if several, put them on the tasks they best fit.\n"
+        "- notes: any useful detail from the message for this task (context, client, specs), else ''.\n\n"
+        f"Message:\n<<<\n{body[:6000]}\n>>>")
+    try:
+        resp = client.messages.create(
+            model=env("PX_ROUTINE_MODEL") or "claude-haiku-5-5", max_tokens=4000,
+            messages=[{"role": "user", "content": prompt}],
+            output_config={"effort": "low", "format": {"type": "json_schema", "schema": _AI_SCHEMA}})
+        if getattr(resp, "stop_reason", None) == "refusal":
+            return None
+        raw = next(b.text for b in resp.content if getattr(b, "type", "") == "text")
+        out = _json.loads(raw).get("tasks") or []
+    except Exception:  # noqa: BLE001 — model down / quota / bad JSON: regex parser takes over
+        return None
+    real_links = sharing.links_in(text)
+    by_name = {n.lower(): p for n, p in attached}
+    items = []
+    for t in out:
+        title = " ".join((t.get("title") or "").split())[:200]
+        if not title:
+            continue
+        oid = None
+        if (t.get("owner") or "").strip():
+            oid, _, problem = resolve_owner(t["owner"], everyone)
+            oid = None if problem else oid
+        links = [u for u in real_links if any(u.startswith(x.rstrip("/.")) or x.startswith(u) for x in t.get("links") or [])]
+        fl = []
+        for f in t.get("files") or []:
+            hit = by_name.get(f.lower()) or next((p for n, p in attached if f.lower() in n.lower() or n.lower() in f.lower()), None)
+            if hit and hit not in fl:
+                fl.append(hit)
+        items.append({"title": title, "owner": oid or default_owner, "due": (t.get("due") or None),
+                      "links": links, "files": fl, "notes": (t.get("notes") or None)})
+    if not items:
+        return None
+    assigned = {p for it in items for p in it["files"]}
+    for _, path in attached:                     # nothing gets lost: an unplaced file goes to every task
+        if path not in assigned:
+            for it in items:
+                it["files"].append(path)
+    placed = {u for it in items for u in it["links"]}
+    for u in real_links:                         # same for a link the model dropped
+        if u not in placed:
+            for it in items:
+                it["links"].append(u)
+    return items
+
+
+def split_tasks(text, default_owner=None, people=None, files=None):
+    """AI first (any format), the rule-based parser when the model isn't reachable."""
+    return ai_split(text, default_owner, people, files) or parse_message(text, default_owner, people, files)
 
 
 # ---------------------------------------------------------------- writes
@@ -448,7 +551,7 @@ def task_add(params, **_):
     try:
         if params.get("text") and not params.get("items"):
             # The person's whole message: split it here, so every item keeps its own links and files.
-            items = parse_message(params["text"], params.get("owner") or _asker(), files=params.get("files"))
+            items = split_tasks(params["text"], params.get("owner") or _asker(), files=params.get("files"))
             for it in items:
                 if params.get("due") and not it.get("due"):
                     it["due"] = params["due"]
@@ -520,7 +623,7 @@ TOOLS = [
      "DM), files = Slack file ids/links or the saved path of a file they sent you (uploaded into the owner's DM). "
      "access: edit (default) | comment | view. EASIEST for a list of things ('1) build X link: … 2) do Y' with "
      "links and attached files): pass text = their whole message as-is (owner = default owner if they named one "
-     "for all, else it's them) and I split it into one task per item, each with its own links and files. "
+     "for all, else it's them) and I split it into tasks (AI reads any format; each task keeps its own links and files). "
      "Then tell the person exactly what was shared (each added task's "
      "'shared' notes), including any link they must open up themselves (e.g. Canva sharing settings).",
      {"title": _S, "owner": _S, "due": _S, "client": _S, "notes": _S, "links": _LIST, "files": _LIST,
