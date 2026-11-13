@@ -53,7 +53,7 @@ STOP = set("""a an the and or but if then so to of in on at for with from by is 
 these those i you we they he she me my our your their its what which who whom how when where why can could would
 should will shall do does did done have has had not no yes please pls ok okay hi hello hey thanks thank also aslo
 need want like just get give make show tell send all any some more most much very about into over after before""".split())
-MAX_CONTEXT = 2800
+MAX_CONTEXT = 5000
 
 
 def _words(text):
@@ -220,6 +220,62 @@ def _clip(s, n):
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
+def now_line(conn, user):
+    """'Now: Thu 13 Nov 2026 11:42 IST · You're talking to Naga Pramod (owner)' — sessions run for days, so
+    the date in the system prompt goes stale; this is fresh every turn."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from .settings import env
+    tz = None
+    try:
+        from . import standup
+        tz = standup.config(conn)["timezone"]
+    except Exception:  # noqa: BLE001
+        conn.rollback()
+    tz = tz or env("AGENCY_TIMEZONE") or "Asia/Kolkata"
+    try:
+        now = datetime.now(ZoneInfo(tz))
+    except Exception:  # noqa: BLE001
+        now = datetime.now(ZoneInfo("UTC"))
+    try:
+        from . import slackui
+        name = slackui.person_name(user) or user
+    except Exception:  # noqa: BLE001
+        name = user
+    from . import guard
+    role = "owner: full access" if user in guard.owners() else "team member"
+    return f"Now: {now:%a %d %b %Y %H:%M} {now.tzname()} · You're talking to {name} ({role})"
+
+
+def recover_message(user):
+    """Their message reached you as empty/'None' (a forward, a shared message, a file with no text): pull it
+    from Slack so you can act on it."""
+    chat = _env("HERMES_SESSION_CHAT_ID")
+    if not chat:
+        return ""
+    try:
+        from . import slackui
+        msgs = slackui.slack("conversations.history", channel=chat, limit=10).get("messages") or []
+    except Exception:  # noqa: BLE001
+        return ""
+    m = next((m for m in msgs if m.get("user") == user), None)
+    if not m:
+        return ""
+    parts = []
+    if (m.get("text") or "").strip():
+        parts.append(m["text"].strip())
+    for a in m.get("attachments") or []:                 # forwarded / shared messages, link previews
+        body = a.get("text") or a.get("fallback") or ""
+        who = a.get("author_name") or a.get("author_subname") or ""
+        src = a.get("from_url") or a.get("original_url") or ""
+        if body or src:
+            parts.append(f"[shared{' from ' + who if who else ''}] {body} {src}".strip())
+    for f in m.get("files") or []:
+        parts.append(f"[file {f.get('id')}: {f.get('name') or f.get('title')} ({f.get('filetype')}) {f.get('permalink', '')}]")
+    text = "\n".join(parts)[:3000]
+    return ("Their message came through empty. This is what they actually sent (act on it):\n" + text) if text else ""
+
+
 def context_for(conn, user, message, is_first_turn, session_id=None):
     """The text injected into a turn ('' when there's nothing useful)."""
     if not user:
@@ -233,6 +289,14 @@ def context_for(conn, user, message, is_first_turn, session_id=None):
                                            "ORDER BY created_at DESC LIMIT 6", ([f"client:{c}" for c in clients],))
                    if r["id"] not in {s["id"] for s in shared}]
     lines = []
+    try:
+        lines.append(now_line(conn, user))
+    except Exception:  # noqa: BLE001
+        pass
+    if (message or "").strip() in ("", "None"):
+        recovered = recover_message(user)
+        if recovered:
+            lines.append(recovered)
     try:                                   # learning from experience: lessons + learning style come first
         from . import brain
         lines += brain.context_lines(conn, user, message, clients, session_id)

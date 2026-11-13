@@ -127,21 +127,23 @@ def add(conn, items, created_by=None, people=None, notify_owners=True, source="m
 
 
 def _dm_block(r, result=None):
-    """A task in its owner's DM: the line, the notes, and every link / file that comes with it."""
+    """A task in its owner's DM: the line, who gave it, the notes, and every link / file that comes with it."""
     from . import sharing
     out = [line(r)]
+    if r.get("created_by"):
+        out.append(f"   _from {_assigner(r)}_")
     if r.get("notes"):
         out.append("   " + " ".join(str(r["notes"]).split())[:600])
     if result:
         out += sharing.dm_lines(result)
     else:
         for u in r.get("links") or []:
-            k = sharing.kind(u)
-            out.append(f"   🔗 <{u}|{sharing.google_label(u) if k == 'google' else k.capitalize()}>")
+            out.append(f"   🔗 <{u}|{sharing.label(u)}>")
     return "\n".join(out)
 
 
-def update(conn, task_code, by=None, status=None, due=None, owner=None, title=None, note=None, people=None):
+def update(conn, task_code, by=None, status=None, due=None, owner=None, title=None, note=None, people=None,
+           links=None, files=None, access="edit"):
     tid = parse_code(task_code)
     row = conn.execute("SELECT * FROM team_tasks WHERE id = %s", (tid,)).fetchone()
     if not row:
@@ -168,6 +170,16 @@ def update(conn, task_code, by=None, status=None, due=None, owner=None, title=No
     if note:
         sets.append("notes = coalesce(notes || E'\\n', '') || %s")
         vals.append(f"{date.today().isoformat()} {note}")
+    from . import sharing
+    new_links = [u for u in sharing.links_in(" ".join(links) if isinstance(links, list) else (links or ""), note or "")
+                 if u not in (row.get("links") or [])]
+    new_files = [str(f) for f in (files or []) if str(f).strip() and str(f) not in (row.get("files") or [])]
+    if new_links:
+        sets.append("links = coalesce(links, '{}') || %s::text[]")
+        vals.append(new_links)
+    if new_files:
+        sets.append("files = coalesce(files, '[]'::jsonb) || %s::jsonb")
+        vals.append(json.dumps(new_files))
     if not sets:
         return view(row)
     sets.append("updated_at = now()")
@@ -179,6 +191,23 @@ def update(conn, task_code, by=None, status=None, due=None, owner=None, title=No
             lists.set_done(conn, row, status == "done")
         except Exception:  # noqa: BLE001 — the List is a mirror; the task itself is updated
             pass
+    if new_links or new_files or title or due is not None or owner:
+        try:
+            from . import lists
+            lists.update_item(conn, row)
+        except Exception:  # noqa: BLE001
+            pass
+    shared = None
+    if (new_links or new_files) and row["owner_slack"] and not owner:
+        try:
+            shared = sharing.share_task(conn, {**row, "links": new_links, "files": new_files}, row["owner_slack"],
+                                        by, access, people)
+        except Exception as e:  # noqa: BLE001
+            shared = {"error": str(e)[:200]}
+        if row["owner_slack"] != by:
+            lines = sharing.dm_lines(shared) if shared and "error" not in shared else \
+                [f"   🔗 <{u}|{sharing.label(u)}>" for u in new_links]
+            notify.dm([row["owner_slack"]], f"📎 New material for *{code(row)}* {row['title']}:\n" + "\n".join(lines))
     if status == "blocked":
         notify.dm([o for o in notify.owners() if o != by],
                   f"🚧 {row['owner_name'] or 'Someone'} is blocked on {code(row)} {row['title']}"
@@ -192,7 +221,10 @@ def update(conn, task_code, by=None, status=None, due=None, owner=None, title=No
             except Exception:  # noqa: BLE001 — the reassignment stands; the DM still carries the links
                 result = None
         notify.dm([row["owner_slack"]], f"📝 {code(row)} is now yours:\n" + _dm_block(row, result))
-    return view(row)
+    out = view(row)
+    if shared:
+        out["shared"] = shared
+    return out
 
 
 def to_list(conn, rows, day=None):
@@ -221,8 +253,20 @@ def _local_today(conn):
 def view(r):
     return {"code": code(r), "title": r["title"], "owner": r["owner_name"], "owner_id": r["owner_slack"],
             "client": r["client"], "due": r["due"].isoformat() if r["due"] else None, "status": r["status"],
-            "source": r["source"], "notes": r["notes"], "links": list(r.get("links") or []),
+            "source": r["source"], "assigned_by": _assigner(r), "notes": r["notes"], "links": list(r.get("links") or []),
             "files": len(r.get("files") or [])}
+
+
+def _assigner(r):
+    """Who gave this task: a person's name, or where it came from (meeting / standup / List)."""
+    if r.get("created_by"):
+        try:
+            from . import slackui
+            return slackui.person_name(r["created_by"]) or r["created_by"]
+        except Exception:  # noqa: BLE001
+            return r["created_by"]
+    return {"meeting": "a meeting (Read AI)", "standup": "standup", "list": "the Slack List"}.get(r.get("source"),
+                                                                                                r.get("source") or "unknown")
 
 
 def line(r, today=None):
@@ -337,7 +381,9 @@ def task_update(params, **_):
     conn = ledger.connect()
     try:
         return _ok(task=update(conn, params["code"], by=_asker(), status=params.get("status"), due=params.get("due"),
-                               owner=params.get("owner"), title=params.get("title"), note=params.get("note")))
+                               owner=params.get("owner"), title=params.get("title"), note=params.get("note"),
+                               links=params.get("links"), files=params.get("files"),
+                               access=params.get("access") or "edit"))
     except Exception as e:  # noqa: BLE001
         return _err(e)
     finally:
@@ -369,9 +415,12 @@ TOOLS = [
      {"owner": _S, "status": _S, "client": _S, "overdue": {"type": "boolean"}, "limit": {"type": "integer"}}, []),
     ("task_update", task_update,
      "Update a task by code (TASK-12): status open|doing|blocked|done|dropped, new due date, new owner (DMed), "
-     "title, or a note. Use for 'done TASK-12', 'move TASK-3 to Friday', 'give TASK-5 to Shravya'.",
+     "title, or a note. Use for 'done TASK-12', 'move TASK-3 to Friday', 'give TASK-5 to Shravya'. "
+     "links / files add material to an existing task ('add this doc/canvas to TASK-40'): the owner gets access "
+     "(Google files shared in Drive, Slack canvases shared, files uploaded to their DM) and a DM, and the "
+     "task's List row is updated. Several tasks: call task_update once per task, in parallel.",
      {"code": _S, "status": {"type": "string", "enum": list(STATUSES)}, "due": _S, "owner": _S, "title": _S,
-      "note": _S}, ["code"]),
+      "note": _S, "links": _LIST, "files": _LIST, "access": _ACCESS}, ["code"]),
 ]
 
 

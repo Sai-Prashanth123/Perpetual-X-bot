@@ -95,6 +95,31 @@ def main():
     conn.execute("DELETE FROM library_docs WHERE id = %s", (row["id"],))
     conn.commit()
     conn.close()
+    # --- scraping console: after the retries fail, the breaker makes further calls fail fast
+    import urllib.error
+    import urllib.request
+    from perpetual_core import console
+    os.environ["XCONSOLE_API_KEY"] = "k"
+    calls = []
+
+    def boom(req, timeout=0):
+        calls.append(req.full_url)
+        raise urllib.error.HTTPError(req.full_url, 502, "bad gateway", {}, None)
+    real, console.RETRY_BACKOFF_S = urllib.request.urlopen, 0
+    urllib.request.urlopen = boom
+    try:
+        try:
+            console._request("GET", "/trends/meta")
+        except console.ConsoleError as e:
+            check(e.status == 502, "502 after retries")
+        n = len(calls)
+        try:
+            console._request("GET", "/trends/meta")
+        except console.ConsoleError as e:
+            check("down" in str(e) and len(calls) == n, "breaker: next call fails instantly, no request sent")
+    finally:
+        urllib.request.urlopen = real
+        console._down.clear()
     print("all good")
 
 

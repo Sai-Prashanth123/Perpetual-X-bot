@@ -266,6 +266,10 @@ def main(runtime=False):
     shared_env.write_text("".join(f"{k}={v}\n" for k, v in script_env.items() if v))
     shared_env.chmod(0o600)
 
+    try:
+        ensure_runtime_packages()
+    except Exception as e:  # noqa: BLE001 — never block the boot on this
+        log(f"runtime packages check skipped: {e}")
     conn = connect_with_retry()
     ledger.ensure_schema(conn)
     imported = _imported_clients()
@@ -634,6 +638,32 @@ def langfuse(home, profile, shared):
     return ["langfuse"]
 
 
+# Python packages our tools import. Hermes runs agents from its own managed environments
+# (/opt/data/installs/*/environments/*/venv), not only /opt/hermes/.venv where the Dockerfile installs.
+RUNTIME_PACKAGES = {"duckdb": "duckdb>=1.1", "pytz": "pytz", "yaml": "pyyaml", "ddgs": "ddgs>=9",
+                    "langfuse": "langfuse==4.15.2"}
+
+
+def ensure_runtime_packages():
+    """Install whatever of RUNTIME_PACKAGES is missing into every Hermes-managed venv (idempotent)."""
+    pythons = sorted(DATA.glob("installs/*/environments/*/venv/bin/python"))
+    for py in pythons:
+        missing = []
+        for mod, spec in RUNTIME_PACKAGES.items():
+            r = subprocess.run([str(py), "-c", f"import {mod}"], capture_output=True, timeout=60)
+            if r.returncode:
+                missing.append(spec)
+        if not missing:
+            continue
+        owner = py.parents[1].owner()            # install as the venv's owner, not root
+        cmd = ["uv", "pip", "install", "--quiet", "--python", str(py), *missing]
+        if os.geteuid() == 0 and owner != "root" and shutil.which("runuser"):
+            cmd = ["runuser", "-u", owner, "--", "env", f"UV_CACHE_DIR={DATA / '.cache' / 'uv'}", *cmd]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        log(f"runtime packages for {py.parts[-4][:8]}: "
+            + ("installed " + ", ".join(missing) if r.returncode == 0 else f"FAILED ({r.stderr.strip()[:200]})"))
+
+
 def power_config(shared):
     """Config shared by every profile: key rotation, long tasks, web search/extract and the cloud browser,
     each backend picked by which keys exist (free DuckDuckGo search when there's no paid one)."""
@@ -646,6 +676,12 @@ def power_config(shared):
         "agent.max_turns": int(env("PX_MAX_TURNS", "120")),
         "web.backend": "tavily" if shared.get("TAVILY_API_KEY") else search,
         "web.search_backend": search, "web.extract_backend": extract,
+        # Every tool visible and callable directly. The tool-search bridge hid our ~95 tools behind
+        # tool_search/tool_call, which takes ONE local tool per call: "add these 5 tasks" failed after
+        # the first. ~11k tokens of schemas, prompt-cached.
+        "tools.tool_search.enabled": env("PX_TOOL_SEARCH", "off"),
+        # A message sent while the bot is still working waits its turn instead of killing the run.
+        "display.busy_input_mode": env("PX_BUSY_INPUT_MODE", "queue"),
     }
     if browser:
         out["browser.cloud_provider"] = browser

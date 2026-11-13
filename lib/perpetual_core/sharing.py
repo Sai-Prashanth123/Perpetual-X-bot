@@ -16,7 +16,8 @@ URL_RX = re.compile(r"https?://[^\s<>|\]\)\"']+")
 GOOGLE_RX = re.compile(r"https?://(?:docs|drive|sheets|slides)\.google\.com/", re.I)
 ROLES = {"edit": "writer", "comment": "commenter", "view": "reader"}
 LABELS = {"edit": "edit", "comment": "comment", "view": "view"}
-KINDS = (("canva", r"canva\.(com|link)"), ("figma", r"figma\.com"), ("notion", r"notion\.(so|site)"),
+KINDS = (("canvas", r"slack\.com/docs/"), ("slackfile", r"slack\.com/files/"),
+         ("canva", r"canva\.(com|link)"), ("figma", r"figma\.com"), ("notion", r"notion\.(so|site)"),
          ("loom", r"loom\.com"), ("slack", r"slack\.com/(files|archives)"), ("dropbox", r"dropbox\.com"),
          ("onedrive", r"(1drv\.ms|sharepoint\.com|onedrive)"), ("airtable", r"airtable\.com"),
          ("miro", r"miro\.com"))
@@ -50,6 +51,17 @@ def google_id(url):
     return None
 
 
+def slack_file_id(url):
+    m = re.search(r"\b(F[A-Z0-9]{8,})\b", url or "")
+    return m.group(1) if m else None
+
+
+def label(url):
+    k = kind(url)
+    return {"google": google_label(url), "canvas": "Slack canvas", "slackfile": "Slack file",
+            "link": "link"}.get(k) or k.capitalize()
+
+
 def google_label(url):
     for word, label in (("document", "Google Doc"), ("spreadsheets", "Google Sheet"), ("presentation", "Google Slides"),
                         ("forms", "Google Form"), ("folders", "Drive folder")):
@@ -78,16 +90,37 @@ def _google_token(conn, created_by):
     return None
 
 
-def share_link(url, email, access, token, call=None):
+def share_canvas(url, user_id, access, slack=None):
+    """Give one person access to a Slack canvas (the bot must be able to manage it)."""
+    from . import slackui
+    slack = slack or slackui.slack
+    cid = slack_file_id(url)
+    base = {"url": url, "kind": "canvas", "label": "Slack canvas"}
+    if not cid or not user_id:
+        return {**base, "status": "link_only", "note": "Slack canvas: link sent"}
+    level = "write" if access == "edit" else "read"
+    try:
+        slack("canvases.access.set", canvas_id=cid, access_level=level, user_ids=[user_id])
+        return {**base, "status": "shared", "access": "edit" if level == "write" else "view",
+                "note": f"Slack canvas: they can now {'edit' if level == 'write' else 'view'} it"}
+    except Exception as e:  # noqa: BLE001 — usually: the canvas isn't the bot's and isn't shared with it
+        return {**base, "status": "failed",
+                "note": f"Slack canvas: I couldn't change its access ({str(e)[:100]}). Link sent; share it with "
+                        "them from the canvas (Share button), or share the canvas with me first."}
+
+
+def share_link(url, email, access, token, call=None, user_id=None, slack=None):
     """{url, kind, label, status: shared|link_only|failed, note}."""
     k = kind(url)
     access = access if access in ROLES else "edit"
+    if k == "canvas":
+        return share_canvas(url, user_id, access, slack)
     if k != "google":
         name = {"link": "link"}.get(k, k.capitalize())
         return {"url": url, "kind": k, "label": name, "status": "link_only",
                 "note": (f"{name}: link sent. I can't grant access in {name}, so make sure its sharing is set to "
                          f"'anyone with the link can {LABELS[access]}' (or invite them in {name}).")
-                if k not in ("link", "slack") else "link sent"}
+                if k not in ("link", "slack", "slackfile") else "link sent"}
     label = google_label(url)
     fid = google_id(url)
     if not fid:
@@ -157,9 +190,10 @@ def share_task(conn, row, owner_id, created_by=None, access="edit", people=None,
     files = list(row.get("files") or [])
     if not owner_id or (not links and not files):
         return {"links": [], "files": []}
+    files += [u for u in links if kind(u) == "slackfile" and u not in files]     # Slack files: sent to their DM
     email = email_of(owner_id, people)
     token = _google_token(conn, created_by) if any(kind(u) == "google" for u in links) else None
-    shared = [share_link(u, email, access, token, call) for u in links]
+    shared = [share_link(u, email, access, token, call, owner_id, slack) for u in links if kind(u) != "slackfile"]
     sent = deliver_files(owner_id, files, note=f"📎 Files for TASK-{row['id']}: {row['title'][:120]}",
                          slack=slack, upload=upload) if files else []
     return {"links": shared, "files": sent}
@@ -171,7 +205,8 @@ def dm_lines(result):
     for s in result.get("links") or []:
         icon = "✅" if s["status"] == "shared" else "🔗"
         extra = f" (you have {s['access']} access)" if s["status"] == "shared" else ""
-        out.append(f"   {icon} <{s['url']}|{s['label']}>{extra}")
+        out.append(f"   {icon} <{s['url']}|{s['label']}>{extra}"
+                   + (f"  _({s['note']})_" if s["status"] == "failed" else ""))
     for f in result.get("files") or []:
         if f["status"] == "sent":
             out.append(f"   📎 {f['file']} (sent here in this chat)")
@@ -229,7 +264,7 @@ def send(conn, to, text, links=None, files=None, access="edit", by=None, people=
         try:
             if _is_channel(target):
                 cid, cname = _channel(target, slack)
-                extra = "".join(f"\n🔗 <{u}|{google_label(u) if kind(u) == 'google' else kind(u).capitalize()}>"
+                extra = "".join(f"\n🔗 <{u}|{label(u)}>"
                                 for u in links if u not in text)
                 slack("chat.postMessage", channel=cid, text=text + extra + footer, unfurl_links=True)
                 got = deliver_files(cid, files, slack=slack, upload=upload) if files else []
@@ -241,7 +276,7 @@ def send(conn, to, text, links=None, files=None, access="edit", by=None, people=
             if problem or not uid:
                 problems.append({"to": target, "problem": problem or "not found"})
                 continue
-            shared = [share_link(u, email_of(uid, everyone), access, token, call) for u in links]
+            shared = [share_link(u, email_of(uid, everyone), access, token, call, uid, slack) for u in links]
             lines = dm_lines({"links": shared})
             body = text + ("\n" + "\n".join(lines) if lines else "")
             slack("chat.postMessage", channel=uid, text=body + footer, unfurl_links=False)

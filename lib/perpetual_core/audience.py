@@ -141,7 +141,11 @@ def _db():
     d = current_dir()
     if not d:
         raise AudienceError("no Audience Seeding data synced yet (job px-audience; needs SEEDING_GITHUB_TOKEN)")
-    import duckdb
+    try:
+        import duckdb
+    except ImportError:
+        raise AudienceError("the duckdb package is missing in this Hermes environment (restart the bot: the "
+                            "boot step installs it)") from None
     return duckdb.connect(str(d / "data" / "dashboard.duckdb"), read_only=True)
 
 

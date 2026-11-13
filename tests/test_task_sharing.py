@@ -126,6 +126,57 @@ def main():
     tool = next(x for x in tasks.TOOLS if x[0] == "task_add")
     check({"links", "files", "access"} <= set(tool[3]) and "ALWAYS pass" in tool[2], "task_add exposes links/files")
 
+    # --- a group of tasks: each item's own material goes to its own owner; canvas shared; Slack file sent
+    CANVAS = "https://thought-pilot.slack.com/docs/T08BRF4LKBL/F0CGZGY8Q6A"
+    SFILE = "https://thought-pilot.slack.com/files/U08BU18L528/F0ABCDEF123/brief.pdf"
+    slack_calls = []
+
+    def slack2(method, **kw):
+        slack_calls.append((method, kw))
+        return {"channel": {"id": "D" + kw.get("users", "X")}} if method == "conversations.open" else {"ok": True}
+
+    def share2(conn, row, oid, created_by, access, people):
+        return sharing.share_task(conn, row, oid, created_by, access, people, call=fake_call, slack=slack2,
+                                  upload=fake_upload)
+
+    import perpetual_core.doclib as doclib
+    doclib.fetch_slack_file = lambda ref: (str(brief), "brief.pdf")
+    CALLS.clear()
+    UPLOADS.clear()
+    added, problems = tasks.add(conn, [
+        {"title": "Revamp the website", "owner": "Sai", "links": [CANVAS]},
+        {"title": "Review the launch doc", "owner": "Shravya", "links": [DOC]},
+        {"title": "Read the brief", "owner": "Ravi", "links": [SFILE]}], created_by="USHR", people=PEOPLE, share=share2)
+    check(len(added) == 3 and not problems, "all three tasks of a group are added")
+    canvas_call = [kw for m, kw in slack_calls if m == "canvases.access.set"]
+    check(canvas_call == [{"canvas_id": "F0CGZGY8Q6A", "access_level": "write", "user_ids": ["UOWNER"]}],
+          "Slack canvas shared with its own owner only (edit)")
+    check([c[3]["emailAddress"] for c in CALLS if "/permissions" in c[1]] == [],
+          "Shravya's own doc isn't re-shared with herself (she created it)")
+    check(UPLOADS and UPLOADS[-1][0] == "DUNOMAIL" and UPLOADS[-1][1] == ["brief.pdf"], "Slack file sent to its owner's DM")
+    sai_dm = [t for ids, t in SENT if ids == ["UOWNER"]][-1]
+    check(CANVAS in sai_dm and "Slack canvas" in sai_dm and "from Shravya K" in sai_dm,
+          "owner's DM: canvas link + who assigned it")
+    check(added[0]["assigned_by"] == "Shravya K", "assigned_by on the task")
+
+    # --- adding material to an existing task later: shared + DM + List refresh
+    import perpetual_core.lists as lists
+    refreshed = []
+    lists.update_item = lambda conn, task, slack=None: refreshed.append(task["id"]) or True
+    sharing.share_task = lambda conn, row, oid, by, access, people: orig(conn, row, oid, by, access, people,
+                                                                          call=fake_call, slack=slack2, upload=fake_upload)
+    CALLS.clear()
+    out = tasks.update(conn, added[0]["code"], by="USHR", links=[DOC], people=PEOPLE)
+    check(DOC in out["links"] and CANVAS in out["links"], "new link appended to the task")
+    check([c[3]["emailAddress"] for c in CALLS if "/permissions" in c[1]] == ["sai@tp.com"], "new doc shared with the owner")
+    check(refreshed and refreshed[-1] == int(added[0]["code"].split("-")[1]), "the task's List row is refreshed")
+    check("New material" in [t for ids, t in SENT if ids == ["UOWNER"]][-1], "owner DMed about the new material")
+    CALLS.clear()
+    tasks.update(conn, added[0]["code"], by="USHR", links=[DOC], people=PEOPLE)
+    check(not CALLS, "the same link again isn't re-shared")
+    sharing.share_task = orig
+    conn.execute("DELETE FROM team_tasks WHERE created_by = 'USHR'")
+
     conn.execute("DELETE FROM team_tasks WHERE created_by = 'UOWNER' AND title IN "
                  "('Review the launch doc','Look at numbers','Read this','My own thing')")
     conn.commit()

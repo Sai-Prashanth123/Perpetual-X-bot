@@ -28,7 +28,22 @@ def _base():
     return (env("XCONSOLE_URL") or DEFAULT_URL).rstrip("/")
 
 
+BREAKER_S = 300            # after the retries fail, calls fail fast for this long (the console is down)
+_down = {}                 # {"until": epoch, "since": "HH:MM UTC", "why": "HTTP 502"}
+
+
+def _trip(why):
+    if not _down or time.time() > _down.get("until", 0):
+        _down["since"] = datetime.now(timezone.utc).strftime("%H:%M UTC")
+    _down.update(until=time.time() + BREAKER_S, why=why)
+
+
 def _request(method, path, body=None, params=None, timeout=60):
+    if _down and time.time() < _down.get("until", 0):
+        mins = max(1, int((_down["until"] - time.time()) / 60))
+        raise ConsoleError(f"The X scraping console is down ({_down['why']}) since {_down['since']}; not retrying for "
+                           f"~{mins} min. Tell the person once, then carry on with stored data "
+                           "(audience_*, stats_query, saved posts).", 503)
     key = env("XCONSOLE_API_KEY")
     if not key:
         raise RuntimeError("XCONSOLE_API_KEY is not set")
@@ -50,17 +65,21 @@ def _request(method, path, body=None, params=None, timeout=60):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 raw = resp.read()
+            _down.clear()
             return json.loads(raw) if raw else None
         except urllib.error.HTTPError as e:
             detail = e.read().decode(errors="replace")[:400]
             if e.code in (429, 502, 503, 504) and attempt < RETRIES:
                 time.sleep(RETRY_BACKOFF_S * (attempt + 1))
                 continue
+            if e.code in (502, 503, 504):
+                _trip(f"HTTP {e.code}")
             raise ConsoleError(f"console {method} {path} -> HTTP {e.code}: {detail}", e.code) from None
         except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
             if attempt < RETRIES:
                 time.sleep(RETRY_BACKOFF_S * (attempt + 1))
                 continue
+            _trip("unreachable")
             raise ConsoleError(f"console {method} {path} unreachable: {e}", None) from None
 
 

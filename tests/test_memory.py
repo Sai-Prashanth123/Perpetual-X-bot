@@ -86,6 +86,11 @@ def main():
     connections.current_user = lambda: None
     check(ctx.hooks["pre_llm_call"](session_id="c", user_message="x", is_first_turn=True) is None,
           "scheduled jobs (no person) get nothing injected")
+    connections.current_user = lambda: "UOWNER0001"
+    res = ctx.hooks["pre_llm_call"](session_id="s7", user_message="what's due today?", is_first_turn=False)
+    check(res and res["context"].startswith("Now: ") and "(owner: full access)" in res["context"],
+          "every turn starts with today's date/time and who is asking (role)")
+    connections.current_user = lambda: me
 
     # full-text search: stemmed ("invoicing" finds "invoice"), ranked, word order free
     m.remember(conn, f"Clients are invoiced monthly via Stripe {tag}", "agency")

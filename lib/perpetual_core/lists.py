@@ -105,9 +105,7 @@ def _rt_links(text, links):
         from . import sharing
         els = rt[0]["elements"][0]["elements"]
         for u in links[:5]:
-            k = sharing.kind(u)
-            els += [{"type": "text", "text": " · "},
-                    {"type": "link", "url": u, "text": sharing.google_label(u) if k == "google" else k.capitalize()}]
+            els += [{"type": "text", "text": " · "}, {"type": "link", "url": u, "text": sharing.label(u)}]
     return rt
 
 
@@ -169,6 +167,22 @@ def fill(conn, day, member_ids=None, slack=None):
         except Exception as e:  # noqa: BLE001 — one bad row must not stop the rest
             print(f"[agency-bot] daily List: couldn't add {tasks.code(t)}: {e}", flush=True)
     return n
+
+
+def update_item(conn, task, slack=None):
+    """Refresh a task's row on its List (title + links, owner, due). False when it isn't on a List."""
+    slack = slack or slackui.slack
+    if not task.get("list_item_id"):
+        return False
+    lst = conn.execute("SELECT * FROM daily_lists WHERE list_id = %s", (task["list_id"],)).fetchone()
+    if not lst:
+        return False
+    fields = _item_fields(lst["columns"] or {}, task, _carried_title(conn, task, lst["day"]))
+    if not fields:
+        return False
+    slack("slackLists.items.update", list_id=task["list_id"],
+          cells=[{"row_id": task["list_item_id"], **f} for f in fields])
+    return True
 
 
 def set_done(conn, task, done=True, slack=None):
