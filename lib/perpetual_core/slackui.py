@@ -49,7 +49,29 @@ def slack(method, **payload):
         data = json.loads(r.read())
     if not data.get("ok"):
         raise SlackError(f"{method}: {data.get('error')} {data.get('needed') or ''}".strip())
+    if method == "chat.postMessage" and not payload.get("thread_ts"):
+        remember_post(data.get("channel") or payload.get("channel"), payload.get("text") or "", data.get("ts"))
     return data
+
+
+def remember_post(chat_id, text, ts=None):
+    """Keep what the bot posted outside a conversation (check-ins, standups, task DMs, briefs, messages sent
+    for someone) so that when the person replies, the chat agent knows what they're answering. Never raises."""
+    if not chat_id or not (text or "").strip():
+        return
+    try:
+        from . import ledger
+        conn = ledger.connect()
+        try:
+            conn.execute("""CREATE TABLE IF NOT EXISTS bot_posts (id BIGSERIAL PRIMARY KEY, chat_id TEXT NOT NULL,
+                            ts TEXT, text TEXT NOT NULL, at TIMESTAMPTZ NOT NULL DEFAULT now())""")
+            conn.execute("INSERT INTO bot_posts(chat_id, ts, text) VALUES (%s,%s,%s)", (chat_id, ts, text[:4000]))
+            conn.execute("DELETE FROM bot_posts WHERE at < now() - interval '7 days'")
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 — a missed note must never block a Slack post
+        pass
 
 
 _people_cache = {"at": 0, "people": []}

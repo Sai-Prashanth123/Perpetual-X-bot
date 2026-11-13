@@ -90,6 +90,23 @@ def main():
     res = ctx.hooks["pre_llm_call"](session_id="s7", user_message="what's due today?", is_first_turn=False)
     check(res and res["context"].startswith("Now: ") and "(owner: full access)" in res["context"],
           "every turn starts with today's date/time and who is asking (role)")
+
+    # a scheduled check-in the chat never saw → the reply "all good" gets it as context
+    import perpetual_core.slackui as su
+    chat = f"DTEST{tag}"
+    su.remember_post(chat, "👋 Quick check-in, Sai: how are these going?\n• TASK-32 Create GTM brain")
+    m._env = lambda name: chat if name == "HERMES_SESSION_CHAT_ID" else None
+    res = ctx.hooks["pre_llm_call"](session_id="s8", user_message="all are going good", is_first_turn=False)
+    check(res and "Quick check-in" in res["context"] and "reply to the newest one" in res["context"],
+          "a reply to a scheduled check-in sees the check-in")
+    ctx.hooks["post_llm_call"](session_id="s8", user_message="all are going good", assistant_response="Great, thanks!",
+                               platform="slack")
+    res = ctx.hooks["pre_llm_call"](session_id="s8", user_message="what else?", is_first_turn=False)
+    check(res is None or "Quick check-in" not in res["context"], "once answered, the check-in isn't shown again")
+    m._env = lambda name: None
+    conn.execute("DELETE FROM bot_posts WHERE chat_id = %s", (chat,))
+    conn.execute("DELETE FROM conversation_log WHERE slack_user = 'UOWNER0001' AND chat_id = %s", (chat,))
+    conn.commit()
     connections.current_user = lambda: me
 
     # full-text search: stemmed ("invoicing" finds "invoice"), ranked, word order free

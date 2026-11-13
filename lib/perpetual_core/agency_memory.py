@@ -247,6 +247,27 @@ def now_line(conn, user):
     return f"Now: {now:%a %d %b %Y %H:%M} {now.tzname()} · You're talking to {name} ({role})"
 
 
+def unseen_posts(conn, user, chat_id, hours=36):
+    """Messages the bot posted in this chat on its own (scheduled check-ins, standups, task DMs, approvals,
+    messages sent for a teammate) since this person last talked to it here. They aren't in the chat
+    history, so without this a reply like 'all good' or 'done' has nothing to refer to."""
+    if not chat_id:
+        return []
+    last = conn.execute("SELECT max(at) a FROM conversation_log WHERE slack_user = %s AND chat_id = %s",
+                        (user, chat_id)).fetchone()["a"]
+    rows = conn.execute("""SELECT at, text FROM bot_posts WHERE chat_id = %s AND at > now() - make_interval(hours => %s)
+                           AND (%s::timestamptz IS NULL OR at > %s) ORDER BY at DESC LIMIT 3""",
+                        (chat_id, hours, last, last)).fetchall()
+    if not rows:
+        return []
+    out = ["Messages YOU sent in this chat on your own (not in the chat history above), newest last. Their new "
+           "message is most likely a reply to the newest one: answer exactly that (e.g. a status reply to a task "
+           "check-in → acknowledge in one line, mark tasks done/doing/blocked if they said so, don't send a report):"]
+    for r in reversed(rows):
+        out.append(f"[{r['at']:%d %b %H:%M} UTC] {_clip(r['text'], 900)}")
+    return out
+
+
 def recover_message(user):
     """Their message reached you as empty/'None' (a forward, a shared message, a file with no text): pull it
     from Slack so you can act on it."""
@@ -293,6 +314,10 @@ def context_for(conn, user, message, is_first_turn, session_id=None):
         lines.append(now_line(conn, user))
     except Exception:  # noqa: BLE001
         pass
+    try:
+        lines += unseen_posts(conn, user, _env("HERMES_SESSION_CHAT_ID"))
+    except Exception:  # noqa: BLE001
+        conn.rollback()
     try:                                   # a list of things to do → one task_add with the raw text
         from . import tasks
         pre, items = tasks.split_items(message)

@@ -593,3 +593,13 @@ CREATE TABLE IF NOT EXISTS audience_state (
     trust_ok     BOOLEAN,
     detail       TEXT
 );
+
+-- v21: what the bot posted on its own (check-ins, standups, task DMs, briefs), so replies have context.
+CREATE TABLE IF NOT EXISTS bot_posts (
+    id       BIGSERIAL PRIMARY KEY,
+    chat_id  TEXT NOT NULL,
+    ts       TEXT,
+    text     TEXT NOT NULL,
+    at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS bot_posts_chat ON bot_posts(chat_id, at DESC);
