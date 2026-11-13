@@ -177,6 +177,33 @@ def main():
     sharing.share_task = orig
     conn.execute("DELETE FROM team_tasks WHERE created_by = 'USHR'")
 
+    # --- a raw message ("1) build X link: … 2) Name: do Y … 3) this pdf …") → one task per item, own material
+    msg = ("[The user sent a document: 'pricing-deck.pdf'. It is saved at: " + str(brief) + ". Its text is not "
+           "inlined here.]\n1) build the landing page link: " + CANVA + "\n2) Shravya: write the newsletter from "
+           + DOC + " by friday\n3) turn this pdf into a carousel for @ravi tomorrow\n   ref: " + CANVAS)
+    items = tasks.parse_message(msg, "UOWNER", PEOPLE)
+    check([i["owner"] for i in items] == ["UOWNER", "USHR", "UNOMAIL"], "owners per item (default / 'Name:' / @name)")
+    check([i["links"] for i in items] == [[CANVA], [DOC], [CANVAS]], "each item keeps its own link")
+    check(items[2]["files"] == [str(brief)] and not items[0]["files"] and not items[1]["files"],
+          "the attached pdf goes to the item that mentions it")
+    check(items[1]["title"] == "Write the newsletter from by friday" or items[1]["title"].startswith("Write the newsletter"),
+          "title cleaned (no owner prefix, no URL)")
+    check(items[1]["due"] == "friday" and items[2]["due"] == "tomorrow", "due dates per item")
+    check(len(tasks.split_items("1) build this 2) build that link: https://x.com/a 3) check y")[1]) == 3,
+          "numbered items on one line are split too")
+    from perpetual_core import connections
+    connections.current_user = lambda: "UOWNER"
+    import perpetual_core.slackui as slackui
+    slackui.people = lambda: PEOPLE
+    sharing.share_task = lambda conn, row, oid, by, access, people: orig(conn, row, oid, by, access, PEOPLE,
+                                                                          call=fake_call, slack=slack2, upload=fake_upload)
+    out = json.loads(tasks.task_add({"text": msg}))
+    check(out["success"] and len(out["added"]) == 3 and all("shared" in a for a in out["added"][1:]),
+          "task_add(text=whole message): 3 tasks, material shared with Shravya and Ravi")
+    sharing.share_task = orig
+    conn.execute("DELETE FROM team_tasks WHERE created_by = 'UOWNER' AND source = 'manual' AND "
+                 "(title ILIKE 'build the landing%%' OR title ILIKE 'write the newsletter%%' OR title ILIKE 'turn this pdf%%')")
+
     conn.execute("DELETE FROM team_tasks WHERE created_by = 'UOWNER' AND title IN "
                  "('Review the launch doc','Look at numbers','Read this','My own thing')")
     conn.commit()

@@ -293,6 +293,18 @@ def context_for(conn, user, message, is_first_turn, session_id=None):
         lines.append(now_line(conn, user))
     except Exception:  # noqa: BLE001
         pass
+    try:                                   # a list of things to do → one task_add with the raw text
+        from . import tasks
+        pre, items = tasks.split_items(message)
+        if len(items) >= 2:
+            n_links = sum(len(re.findall(r"https?://", i)) for i in items)
+            n_files = len(tasks.attachments_in(message))
+            lines.append(f"This message lists {len(items)} items ({n_links} links, {n_files} attached files). If "
+                         "they are things to do, call task_add ONCE with text = their whole message (and owner if "
+                         "they named one person for all): it makes one task per item and gives each its own links "
+                         "and files. Then list every task code and what was shared with whom.")
+    except Exception:  # noqa: BLE001
+        pass
     if (message or "").strip() in ("", "None"):
         recovered = recover_message(user)
         if recovered:

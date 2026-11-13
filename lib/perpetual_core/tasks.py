@@ -59,6 +59,9 @@ def resolve_owner(who, people=None):
             if (p.get("email") or "").lower() == w.lower():
                 return p["id"], p["real_name"] or p["display_name"] or p["name"], None
         return None, w, f"no Slack member with email {w}"
+    exact_id = next((p for p in everyone if p["id"] == w.lstrip("<@").rstrip(">")), None)
+    if exact_id:
+        return exact_id["id"], exact_id["real_name"] or exact_id["display_name"] or exact_id["name"], None
     if re.fullmatch(r"U[A-Z0-9]{6,}", w.lstrip("<@").rstrip(">")):
         uid = w.lstrip("<@").rstrip(">")
         p = next((p for p in everyone if p["id"] == uid), None)
@@ -76,6 +79,105 @@ def resolve_owner(who, people=None):
     if partial:
         return None, w, "several people match: " + ", ".join(p["real_name"] or p["name"] for p in partial[:5])
     return None, w, f"nobody in Slack matches {w!r}"
+
+
+# ---------------------------------------------------------------- a whole message → tasks
+
+# Attachment notes Hermes puts into the message ("[The user sent a document: 'brief.pdf'. It is saved at: /x]")
+_ATTACH = re.compile(r"\[(?:The user sent|User sent)[^\]]*?(?:'(?P<name>[^']+)')?[^\]]*?saved at: "
+                     r"(?P<path>\S+?)(?:\.(?=\s)|\](?=\s|$)|$)[^\]]*\]?", re.I)
+_MARK = re.compile(r"^\s*(?:\(?\d{1,2}\s*[).:\-]|[-•*▪◦·]|\[\s?\]|step\s*\d+\s*[:.)-]?)\s+", re.I)
+_INLINE = re.compile(r"(?:(?<=\s)|^)\(?(\d{1,2})[).]\s+")
+_DUE = re.compile(r"\b(?:by|due|before|on)?\s*(today|tomorrow|tmrw|tmr|monday|tuesday|wednesday|thursday|friday|"
+                  r"saturday|sunday|in \d+ days?|\d{4}-\d{2}-\d{2})\b", re.I)
+_OWNER = re.compile(r"(?:<@(U[A-Z0-9]+)(?:\|[^>]*)?>|\b(?:for|to|assign(?:ed)?\s+to|owner:?|by)\s+@?([A-Za-z][\w.]{1,30})"
+                    r"|(?<!\w)@([A-Za-z][\w.]{1,30}))", re.I)
+_FILEWORDS = re.compile(r"\b(pdf|file|files|docx|deck|ppt|pptx|xlsx|csv|attached|attachment|image|png|jpe?g|"
+                        r"video|mp4|this format|screenshot)\b", re.I)
+
+
+def attachments_in(text):
+    """[(display name, saved path)] for every file Hermes noted in the message."""
+    return [(m.group("name") or m.group("path").rsplit("/", 1)[-1], m.group("path")) for m in _ATTACH.finditer(text or "")]
+
+
+def split_items(text):
+    """(preamble, [item texts]) from a numbered / bulleted message ('1) …', '2. …', '- …', '•'),
+    continuation lines ('link: https://…') stay with their item; '1) a 2) b' on one line works too."""
+    body = _ATTACH.sub(" ", text or "")
+    pre, items = [], []
+    for ln in body.splitlines():
+        if _MARK.match(ln):
+            items.append(_MARK.sub("", ln, count=1).strip())
+        elif ln.strip():
+            if items:
+                items[-1] += "\n" + ln.strip()
+            else:
+                pre.append(ln.strip())
+    if len(items) < 2:                     # "1) build this 2) build that" on one line
+        flat = " ".join(body.split())
+        parts = _INLINE.split(flat)
+        if len(parts) >= 5:                # [pre, '1', a, '2', b, ...]
+            nums = parts[1::2]
+            if nums[:2] == ["1", "2"]:
+                return parts[0].strip(), [p.strip() for p in parts[2::2] if p.strip()]
+    return " ".join(pre), [i for i in items if i]
+
+
+def _owner_in(text, people):
+    lead = re.match(r"\s*@?([A-Za-z][\w.]{1,30})\s*[:\-–]\s", text or "")      # "Shravya: write …"
+    if lead:
+        oid, _, problem = resolve_owner(lead.group(1), people)
+        if oid and not problem:
+            return oid
+    for m in _OWNER.finditer(text or ""):
+        cand = m.group(1) or m.group(2) or m.group(3)
+        if not cand or cand.lower() in ("me", "the", "this", "that", "it", "today", "tomorrow", "us", "him", "her",
+                                         "them", "review", "client", "all"):
+            continue
+        oid, name, problem = resolve_owner(cand, people)
+        if oid and not problem:
+            return oid
+    return None
+
+
+def _clean_title(text):
+    t = re.sub(r"<(https?://[^|>]+)\|([^>]+)>", r"\2", text or "")          # Slack <url|label> → label
+    t = re.sub(r"https?://\S+", "", t)
+    t = re.sub(r"\b(links?|url|doc|docs|ref|reference)\s*[:\-]\s*(?=$|\s)", "", t, flags=re.I)
+    t = " ".join(t.split()).strip(" -:,.;")
+    return (t[:1].upper() + t[1:])[:200] if t else ""
+
+
+def parse_message(text, default_owner=None, people=None, files=None):
+    """A message → task items, each with its own owner, due date, links and files.
+    Owner: named in the item, else named in the intro ('for Naga: …'), else default_owner.
+    Files: the attachments in the message (plus `files`) go to the item that mentions them (by name, or
+    'pdf / file / attached …'); if no item does, a single item gets them, otherwise every item."""
+    from . import sharing
+    pre, raw = split_items(text)
+    if not raw:
+        raw = [_ATTACH.sub(" ", text or "").strip()]
+    everyone_owner = _owner_in(pre, people) or default_owner
+    attached = attachments_in(text) + [(str(f).rsplit("/", 1)[-1], str(f)) for f in (files or [])]
+    items = []
+    for it in raw:
+        due = _DUE.search(it)
+        lead = re.match(r"\s*@?([A-Za-z][\w.]{1,30})\s*[:\-–]\s+", it)
+        shown = it[lead.end():] if lead and _owner_in(it[:lead.end()], people) else it   # "Shravya: write X" → "Write X"
+        shown = _DUE.sub(" ", shown) if due else shown                                   # the date lives in `due`
+        items.append({"title": _clean_title(shown) or it[:200], "owner": _owner_in(it, people) or everyone_owner,
+                      "due": due.group(1).lower().replace("tmrw", "tomorrow").replace("tmr", "tomorrow") if due else None,
+                      "links": sharing.links_in(it), "files": [], "notes": it if len(it) > 200 or "http" in it else None})
+    for name, path in attached:
+        stem = re.sub(r"\.[a-z0-9]{2,5}$", "", name.lower())
+        ext = name.lower().rsplit(".", 1)[-1] if "." in name else ""
+        hits = [i for i, it in enumerate(raw) if stem and stem in it.lower()] or \
+               [i for i, it in enumerate(raw) if ext and re.search(rf"\b{re.escape(ext)}\b", it, re.I)] or \
+               [i for i, it in enumerate(raw) if _FILEWORDS.search(it)]
+        for i in (hits if hits else range(len(items))):
+            items[i]["files"].append(path)
+    return items
 
 
 # ---------------------------------------------------------------- writes
@@ -344,7 +446,18 @@ def _asker():
 def task_add(params, **_):
     conn = ledger.connect()
     try:
-        items = params.get("items") or [params]
+        if params.get("text") and not params.get("items"):
+            # The person's whole message: split it here, so every item keeps its own links and files.
+            items = parse_message(params["text"], params.get("owner") or _asker(), files=params.get("files"))
+            for it in items:
+                if params.get("due") and not it.get("due"):
+                    it["due"] = params["due"]
+                if params.get("client"):
+                    it["client"] = params["client"]
+                if params.get("access"):
+                    it["access"] = params["access"]
+        else:
+            items = params.get("items") or [params]
         if params.get("items"):           # links / files / access given once apply to every item that has none
             items = [dict(it, **{k: params[k] for k in ("links", "files", "access") if params.get(k) and not it.get(k)})
                      for it in items]
@@ -405,10 +518,15 @@ TOOLS = [
      "ALWAYS pass every doc, link and file the person mentions or attaches: links = URLs (Google Docs/Sheets/Slides/"
      "Drive are shared with the owner in Drive, edit access by default; Canva/Figma/Notion/other links go in their "
      "DM), files = Slack file ids/links or the saved path of a file they sent you (uploaded into the owner's DM). "
-     "access: edit (default) | comment | view. Then tell the person exactly what was shared (each added task's "
+     "access: edit (default) | comment | view. EASIEST for a list of things ('1) build X link: … 2) do Y' with "
+     "links and attached files): pass text = their whole message as-is (owner = default owner if they named one "
+     "for all, else it's them) and I split it into one task per item, each with its own links and files. "
+     "Then tell the person exactly what was shared (each added task's "
      "'shared' notes), including any link they must open up themselves (e.g. Canva sharing settings).",
      {"title": _S, "owner": _S, "due": _S, "client": _S, "notes": _S, "links": _LIST, "files": _LIST,
-      "access": _ACCESS, "items": {"type": "array", "items": _ITEM}, "source": _S, "source_ref": _S}, []),
+      "access": _ACCESS, "items": {"type": "array", "items": _ITEM}, "source": _S, "source_ref": _S,
+      "text": {"type": "string", "description": "The person's whole message (list of tasks with links/files): "
+                                                "split into tasks automatically."}}, []),
     ("task_list", task_list,
      "List team tasks. owner: 'me' (default), a name, or 'all'. status: open (default: open/doing/blocked), "
      "done, all… Optional client, overdue=true.",
