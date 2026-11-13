@@ -314,8 +314,24 @@ def context_for(conn, user, message, is_first_turn, session_id=None):
         lines.append(now_line(conn, user))
     except Exception:  # noqa: BLE001
         pass
+    chat = _env("HERMES_SESSION_CHAT_ID")
+    posts = []
     try:
-        lines += unseen_posts(conn, user, _env("HERMES_SESSION_CHAT_ID"))
+        posts = unseen_posts(conn, user, chat)
+        lines += posts
+    except Exception:  # noqa: BLE001
+        conn.rollback()
+    try:                                   # understand the message (what it means, what it answers) or clarify
+        from . import intent
+        recent = conn.execute("""SELECT user_text, reply_text FROM conversation_log WHERE slack_user = %s
+                                 AND (%s::text IS NULL OR chat_id = %s) AND at > now() - interval '12 hours'
+                                 ORDER BY at DESC LIMIT 3""", (user, chat, chat)).fetchall()[::-1]
+        try:
+            from . import slackui
+            who = slackui.person_name(user)
+        except Exception:  # noqa: BLE001
+            who = None
+        lines += intent.note(intent.understand(message, recent, posts[1:], who))
     except Exception:  # noqa: BLE001
         conn.rollback()
     try:                                   # a list of things to do → one task_add with the raw text
