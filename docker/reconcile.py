@@ -425,6 +425,7 @@ def main(runtime=False):
     write_script(DATA, "px_index.py", ["semantic-index"])
     write_script(DATA, "px_graph.py", ["graph-ingest"])
     write_script(DATA, "px_audience.py", ["audience-sync"])
+    write_script(DATA, "px_heal.py", ["heal-chats"])
     write_script(DATA, "px_meetings.py", ["meetings-pending"])
     write_script(DATA, "px_tasks.py", ["tasks-remind"])
     write_script(DATA, "px_standup.py", ["standup-tick"])
@@ -740,6 +741,10 @@ def hq_jobs(deliver, learn_model):
         # summary + reports go to HQ and each client's Engage list to their channel. Model-free.
         {"name": "px-audience", "schedule": "20 */2 * * *", "prompt": "",
          "args": ["--deliver", deliver, "--no-agent", "--script", "px_audience.py"]},
+        # Self-healing chats: a restart mid-answer freezes that chat (✅ but no reply); un-stick it and
+        # tell the person to resend. Every profile, every chat. Model-free, silent when nothing's stuck.
+        {"name": "px-heal", "schedule": "every 2m", "prompt": "",
+         "args": ["--deliver", deliver, "--no-agent", "--script", "px_heal.py"]},
         # Connected memory: the day's new facts -> Graphiti knowledge graph (after the memory digest).
         {"name": "px-graph", "schedule": "45 23 * * *", "prompt": "",
          "args": ["--deliver", deliver, "--no-agent", "--script", "px_graph.py"]},

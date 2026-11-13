@@ -126,6 +126,11 @@ def main(argv):
                     print(f"posted {line}", file=sys.stderr)
             except audience.AudienceError as e:
                 print(f"skipped {cmd}: {e}", file=sys.stderr)
+        elif cmd == "heal-chats":
+            # Every 2 min: chats frozen by a restart mid-answer are un-stuck and the person is told.
+            from . import heal
+            for line in heal.heal():
+                print(line, file=sys.stderr)
         elif cmd == "brain-bootstrap":
             # One-time "childhood": score the whole conversation history so sleep can learn from it.
             from . import brain
