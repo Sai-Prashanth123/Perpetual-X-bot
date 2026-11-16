@@ -126,6 +126,11 @@ def main(argv):
                     print(f"posted {line}", file=sys.stderr)
             except audience.AudienceError as e:
                 print(f"skipped {cmd}: {e}", file=sys.stderr)
+        elif cmd == "cron-watch":
+            # Every 10 min: failed scheduled jobs are retried once; a second failure is DMed to owners.
+            from . import cronwatch
+            for line in cronwatch.watch(conn):
+                print(line, file=sys.stderr)
         elif cmd == "heal-chats":
             # Every 2 min: chats frozen by a restart mid-answer are un-stuck and the person is told.
             from . import heal

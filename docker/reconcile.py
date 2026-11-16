@@ -167,7 +167,10 @@ def reconcile_cron(home, profile, jobs, fingerprint):
         hermes("cron", "remove", name, profile=profile, check=False)
     for job in jobs:
         prompt = [job["prompt"]] if job["prompt"] else []
-        hermes("cron", "create", job["schedule"], *prompt, "--name", job["name"], *job["args"], profile=profile)
+        args = list(job["args"])
+        if "--failure-deliver" not in args:      # failures never land in channels: px-watch handles them
+            args += ["--failure-deliver", "local"]
+        hermes("cron", "create", job["schedule"], *prompt, "--name", job["name"], *args, profile=profile)
     stamp.write_text(fingerprint)
     return True
 
@@ -426,6 +429,7 @@ def main(runtime=False):
     write_script(DATA, "px_graph.py", ["graph-ingest"])
     write_script(DATA, "px_audience.py", ["audience-sync"])
     write_script(DATA, "px_heal.py", ["heal-chats"])
+    write_script(DATA, "px_watch.py", ["cron-watch"])
     write_script(DATA, "px_meetings.py", ["meetings-pending"])
     write_script(DATA, "px_tasks.py", ["tasks-remind"])
     write_script(DATA, "px_standup.py", ["standup-tick"])
@@ -573,7 +577,7 @@ def client_jobs(deliver, learn_model, offset=0):
     """Client agents work on demand. Unasked, they only: pick up hand-offs from Agency Bot (a model-free
     check every 2 minutes), research their client (silently, 3 nights a week), send one daily brief,
     a weekly report, and run the weekly learning review (silent)."""
-    common = ["--deliver", deliver, "--failure-deliver", deliver]
+    common = ["--deliver", deliver, "--failure-deliver", "local"]   # failures: px-watch retries, then DMs owners
     base = ["client-brief", "client-voice", "playbook", "agency-playbook", "content-pipeline", "content-studio",
             "doc-templates"]
     if (SHARED_SKILLS / "agency-writing-standards" / "SKILL.md").exists():
@@ -683,6 +687,9 @@ def power_config(shared):
         "tools.tool_search.enabled": env("PX_TOOL_SEARCH", "off"),
         # A message sent while the bot is still working waits its turn instead of killing the run.
         "display.busy_input_mode": env("PX_BUSY_INPUT_MODE", "queue"),
+        # If Anthropic errors on the main model, chat and unpinned jobs move to a backup model.
+        "fallback_providers": [{"provider": "anthropic", "model": m} for m in
+                               (env("PX_FALLBACK_MODELS") or "claude-opus-5-5,claude-haiku-5-5").split(",") if m.strip()],
     }
     if browser:
         out["browser.cloud_provider"] = browser
@@ -692,7 +699,7 @@ def power_config(shared):
 
 
 def hq_jobs(deliver, learn_model):
-    common = ["--deliver", deliver, "--failure-deliver", deliver]
+    common = ["--deliver", deliver, "--failure-deliver", "local"]   # failures: px-watch retries, then DMs owners
     return [
         {"name": "px-metrics", "schedule": "0 6 * * *", "prompt": "",
          "args": ["--deliver", deliver, "--no-agent", "--script", "px_metrics.py"]},
@@ -745,6 +752,9 @@ def hq_jobs(deliver, learn_model):
         # tell the person to resend. Every profile, every chat. Model-free, silent when nothing's stuck.
         {"name": "px-heal", "schedule": "every 2m", "prompt": "",
          "args": ["--deliver", deliver, "--no-agent", "--script", "px_heal.py"]},
+        # Job watchdog: a failed scheduled job is re-run once; if it fails again the owners get one DM.
+        {"name": "px-watch", "schedule": "every 10m", "prompt": "",
+         "args": ["--deliver", deliver, "--failure-deliver", "local", "--no-agent", "--script", "px_watch.py"]},
         # Connected memory: the day's new facts -> Graphiti knowledge graph (after the memory digest).
         {"name": "px-graph", "schedule": "45 23 * * *", "prompt": "",
          "args": ["--deliver", deliver, "--no-agent", "--script", "px_graph.py"]},

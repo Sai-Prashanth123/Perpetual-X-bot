@@ -18,7 +18,7 @@ DEFAULT_URL = "https://scraping.thought-pilot.co/api"
 MAX_LIMIT = 100          # hard cap per call so one tool call can't burn the scraping pool
 JOB_TIMEOUT_S = 240
 POLL_EVERY_S = 3
-RETRIES = 3               # temporary console errors (502/503/504, timeouts) are retried
+RETRIES = 3               # temporary console errors (429, any 5xx incl. Cloudflare 52x, timeouts) are retried
 RETRY_BACKOFF_S = 5
 
 
@@ -69,10 +69,10 @@ def _request(method, path, body=None, params=None, timeout=60):
             return json.loads(raw) if raw else None
         except urllib.error.HTTPError as e:
             detail = e.read().decode(errors="replace")[:400]
-            if e.code in (429, 502, 503, 504) and attempt < RETRIES:
+            if (e.code == 429 or e.code >= 500) and attempt < RETRIES:
                 time.sleep(RETRY_BACKOFF_S * (attempt + 1))
                 continue
-            if e.code in (502, 503, 504):
+            if e.code >= 500:
                 _trip(f"HTTP {e.code}")
             raise ConsoleError(f"console {method} {path} -> HTTP {e.code}: {detail}", e.code) from None
         except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
@@ -90,7 +90,7 @@ class ConsoleError(RuntimeError):
 
     @property
     def temporary(self):
-        return self.status in (None, 429, 502, 503, 504)
+        return self.status is None or self.status == 429 or self.status >= 500
 
 
 def run_actor(actor, payload, items_limit=MAX_LIMIT, items_path="items"):
