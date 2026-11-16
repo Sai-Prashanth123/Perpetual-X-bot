@@ -498,9 +498,41 @@ def _imported_clients():
         return []
 
 
+class _Reconnecting:
+    """A setup connection that survives the database closing it. Setup sits idle for minutes while it
+    registers cron jobs; the free Neon database suspends idle computes and drops the connection
+    ("AdminShutdown"), which used to restart the whole setup (and give up after 3 tries). Autocommit
+    is on, so re-running the one statement on a fresh connection is safe."""
+
+    def __init__(self, connect):
+        self._connect = connect
+        self._conn = connect()
+
+    def execute(self, *args, **kwargs):
+        import psycopg
+        try:
+            return self._conn.execute(*args, **kwargs)
+        except (psycopg.OperationalError, psycopg.InterfaceError) as e:
+            log(f"database connection dropped ({e.__class__.__name__}); reconnecting")
+            try:
+                self._conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._conn = self._connect()
+            return self._conn.execute(*args, **kwargs)
+
+    def __getattr__(self, name):          # commit, rollback, close, cursor, ...
+        return getattr(self._conn, name)
+
+
 def connect_with_retry(attempts=8):
     """The container's network can lag the boot by a few seconds; an external database
-    (Neon, Supabase) shouldn't fail the whole start on the first try."""
+    (Neon, Supabase) shouldn't fail the whole start on the first try. The connection reconnects
+    by itself if the database drops it later."""
+    return _Reconnecting(lambda: _connect_once(attempts))
+
+
+def _connect_once(attempts=8):
     import time
     for i in range(1, attempts + 1):
         try:
@@ -778,12 +810,12 @@ if __name__ == "__main__":
     # command"). Every step here is idempotent, so just run the whole setup again.
     import time
     import psycopg
-    for attempt in range(4):
+    for attempt in range(6):
         try:
             main(runtime="--from-runtime" in sys.argv)
             break
         except psycopg.OperationalError as e:
-            if attempt == 3:
+            if attempt == 5:
                 raise
             log(f"database connection dropped ({e.__class__.__name__}); retrying setup in 15s")
             time.sleep(15)
