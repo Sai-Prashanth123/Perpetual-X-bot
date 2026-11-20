@@ -719,6 +719,9 @@ def power_config(shared):
         "tools.tool_search.enabled": env("PX_TOOL_SEARCH", "off"),
         # A message sent while the bot is still working waits its turn instead of killing the run.
         "display.busy_input_mode": env("PX_BUSY_INPUT_MODE", "queue"),
+        # Hermes gives each plugin 10 s to load; on the small server under load Slack's own plugin
+        # missed it and the bot came up with no Slack at all.
+        "plugins.load_timeout_seconds": int(env("PX_PLUGIN_LOAD_TIMEOUT", "120")),
         # If Anthropic errors on the main model, chat and unpinned jobs move to a backup model.
         "fallback_providers": [{"provider": "anthropic", "model": m} for m in
                                (env("PX_FALLBACK_MODELS") or "claude-opus-5-5,claude-haiku-5-5").split(",") if m.strip()],
