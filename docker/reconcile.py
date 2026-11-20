@@ -785,7 +785,7 @@ def hq_jobs(deliver, learn_model):
         {"name": "px-heal", "schedule": "every 2m", "prompt": "",
          "args": ["--deliver", deliver, "--no-agent", "--script", "px_heal.py"]},
         # Job watchdog: a failed scheduled job is re-run once; if it fails again the owners get one DM.
-        {"name": "px-watch", "schedule": "every 10m",   # reads local run history; DB only on a failure "prompt": "",
+        {"name": "px-watch", "schedule": "every 10m", "prompt": "",   # local run history; DB only on a failure
          "args": ["--deliver", deliver, "--failure-deliver", "local", "--no-agent", "--script", "px_watch.py"]},
         # Connected memory: the day's new facts -> Graphiti knowledge graph (after the memory digest).
         {"name": "px-graph", "schedule": "45 23 * * *", "prompt": "",
