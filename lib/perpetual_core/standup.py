@@ -70,7 +70,57 @@ def update_config(conn, **changes):
     if sets:
         conn.execute(f"UPDATE standup_config SET {', '.join(sets)} WHERE id = 1", vals)
         conn.commit()
+        try:
+            gate_path().unlink()                       # new times: the next tick re-reads them
+        except OSError:
+            pass
     return config(conn) if sets else cfg
+
+
+# ---------------------------------------------------------------- database wake-ups
+# The free database sleeps after 5 idle minutes and bills every minute it is awake. The tick runs
+# every 5 minutes, so it only opens the database near one of today's moments (questions, summary,
+# check-in, end of day), and otherwise once every hour on the shared :00/:20/:40 grid.
+
+GATE_WINDOW = timedelta(minutes=15)
+
+
+def gate_path():
+    import os
+    from pathlib import Path
+    return Path(os.environ.get("PX_DATA_ROOT") or "/opt/data") / "standup-gate.json"
+
+
+def needs_db(now=None, path=None):
+    from datetime import timezone
+    now = now or datetime.now(timezone.utc)
+    try:
+        g = json.loads((path or gate_path()).read_text())
+        at = datetime.fromisoformat(g["at"])
+        due = [datetime.fromisoformat(m) for m in g.get("moments", [])]
+    except (OSError, ValueError, KeyError, TypeError):
+        return True
+    if any(m <= now < m + GATE_WINDOW for m in due):
+        return True
+    return now - at >= timedelta(minutes=60) and now.minute % 20 < 5
+
+
+def save_gate(conn, now=None, path=None):
+    from datetime import timezone
+    now = now or datetime.now(timezone.utc)
+    cfg = config(conn)
+    out = []
+    if cfg["enabled"]:
+        local = now.astimezone(ZoneInfo(cfg["timezone"])).date()
+        for day in (local, local + timedelta(days=1)):
+            if is_day(cfg, day):
+                ask_at, summary_at, _ = moments(cfg, day)
+                out += [ask_at, summary_at, _at(cfg, day, cfg["checkin_time"]), _at(cfg, day, cfg["eod_time"])]
+    p = path or gate_path()
+    try:
+        p.write_text(json.dumps({"at": now.isoformat(), "moments": [m.isoformat() for m in out]}))
+    except OSError:
+        pass
 
 
 # ---------------------------------------------------------------- timing

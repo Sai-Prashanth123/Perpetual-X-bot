@@ -308,7 +308,35 @@ def add_request(conn, client, request, by=None, requester_slack=None, kind=None)
            VALUES (%s,%s,%s,%s,%s) RETURNING id""",
         (client, request, by, requester_slack, kind)).fetchone()
     conn.commit()
+    kick_requests(client)
     return row["id"]
+
+
+def kick_requests(client):
+    """Start the client's px-requests job now instead of waiting for its next scheduled check
+    (best effort; the schedule still picks the request up if this doesn't run)."""
+    import json
+    import os
+    import shutil
+    import subprocess
+    from pathlib import Path
+    from .settings import profile_slug
+    slug = profile_slug(client or "")
+    jobs = Path(os.environ.get("PX_DATA_ROOT") or "/opt/data") / "profiles" / slug / "cron" / "jobs.json"
+    if not slug or not jobs.exists() or not shutil.which("hermes"):
+        return False
+    try:
+        data = json.loads(jobs.read_text(encoding="utf-8"))
+        items = data.get("jobs", data) if isinstance(data, dict) else data
+        items = items.values() if isinstance(items, dict) else items
+        job = next((j["id"] for j in items if isinstance(j, dict) and j.get("name") == "px-requests"), None)
+        if not job:
+            return False
+        subprocess.Popen(["hermes", "-p", slug, "cron", "run", job], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        return True
+    except (OSError, ValueError, KeyError):
+        return False
 
 
 def pending_requests(conn, client):

@@ -617,7 +617,7 @@ def client_jobs(deliver, learn_model, offset=0):
     formats = ["x-article", "x-long-tweet", "article-qrt", "video-qrt"]
     deep = ["--provider", "anthropic", "--model", learn_model, "--reasoning-effort", "high"]
     return [
-        {"name": "px-requests", "schedule": "every 2m",
+        {"name": "px-requests", "schedule": "*/20 * * * *",   # new work also starts it at once (agency.kick_requests)
          "prompt": "Work was handed to you (by Agency Bot or a teammate's agent): follow agency-requests.",
          "args": common + skill_args(*base, "agency-requests", "reply-pack", "deep-research", "weekly-package",
                                      *formats, "tweet-ideas", "reply-hunter", "quote-hunter", "radar-reply",
@@ -634,7 +634,7 @@ def client_jobs(deliver, learn_model, offset=0):
         {"name": "px-report", "schedule": f"{offset} 11 * * 1",
          "prompt": "Weekly performance report: follow performance-report.",
          "args": common + skill_args("client-brief", "playbook", "doc-templates", "performance-report") + routine()},
-        {"name": "px-postmortem", "schedule": f"{(offset + 7) % 60} */2 * * *",
+        {"name": "px-postmortem", "schedule": f"{(offset + 7) // 20 * 20 % 60} */2 * * *",
          "prompt": "Posts reached 48 hours: follow post-mortem, then reply exactly [SILENT].",
          "args": common + skill_args("client-brief", "client-voice", "playbook", "post-mortem")
                  + ["--monitor-script", "px_postmortem.py"] + routine()},
@@ -644,7 +644,7 @@ def client_jobs(deliver, learn_model, offset=0):
         {"name": "px-swipe", "schedule": f"{offset} 9 * * 3",
          "prompt": "Weekly competitor swipe file: follow swipe-file. Scheduled run.",
          "args": common + skill_args(*base, "swipe-file") + deep},
-        {"name": "px-slots", "schedule": "every 15m", "prompt": "",
+        {"name": "px-slots", "schedule": "*/20 * * * *", "prompt": "",
          "args": ["--deliver", deliver, "--no-agent", "--script", "px_slots.py"]},
         {"name": "px-learn", "schedule": f"{offset} 22 * * 0",
          "prompt": "Weekly learning review: follow learning-review and update the playbook and client-voice "
@@ -738,10 +738,10 @@ def hq_jobs(deliver, learn_model):
         {"name": "px-viral", "schedule": "30 6,14 * * *", "prompt": "",
          "args": ["--deliver", deliver, "--no-agent", "--script", "px_viral.py"]},
         # Early-reply radar: one model-free scan for every client; hits become client requests.
-        {"name": "px-radar", "schedule": "*/10 7-22 * * *", "prompt": "",
+        {"name": "px-radar", "schedule": "*/20 7-22 * * *", "prompt": "",
          "args": ["--deliver", deliver, "--no-agent", "--script", "px_radar.py"]},
         # Trend-jacking: niche posts taking off right now become drafts within minutes.
-        {"name": "px-trends", "schedule": "5,35 7-22 * * *", "prompt": "",
+        {"name": "px-trends", "schedule": "0,40 7-22 * * *", "prompt": "",
          "args": ["--deliver", deliver, "--no-agent", "--script", "px_trends.py"]},
         # Meetings → tasks: finished calls from the agency's Read AI (model runs only when there's one).
         {"name": "px-meetings", "schedule": "*/20 7-22 * * *",
@@ -754,10 +754,10 @@ def hq_jobs(deliver, learn_model):
         {"name": "px-standup", "schedule": "*/5 * * * *", "prompt": "",
          "args": ["--deliver", deliver, "--no-agent", "--script", "px_standup.py"]},
         # Notion Agency OS: two-way task sync, meetings / clients / goals pushed (model-free).
-        {"name": "px-notion", "schedule": "*/10 * * * *", "prompt": "",
+        {"name": "px-notion", "schedule": "*/20 * * * *", "prompt": "",
          "args": ["--deliver", deliver, "--no-agent", "--script", "px_notion.py"]},
         # Weekly team scorecard: Friday 18:00 (model-free, posts once a week).
-        {"name": "px-scorecard", "schedule": "*/15 18-21 * * 5", "prompt": "",
+        {"name": "px-scorecard", "schedule": "*/20 18-21 * * 5", "prompt": "",
          "args": ["--deliver", deliver, "--no-agent", "--script", "px_scorecard.py"]},
         # Results vs goals: Monday internal summary, monthly client report drafts (sent only via approvals).
         {"name": "px-results", "schedule": "30 10 * * 1",
@@ -767,14 +767,14 @@ def hq_jobs(deliver, learn_model):
          "prompt": "Monthly client results reports: follow results-report (Monthly).",
          "args": common + skill_args("results-report")},
         # Proactive alerts: model-free triggers; the agent only runs when there are candidates to judge.
-        {"name": "px-proactive", "schedule": "*/30 9-20 * * 1-5",
+        {"name": "px-proactive", "schedule": "0,40 9-20 * * 1-5",
          "prompt": "Proactive alert candidates are waiting: follow proactive-review.",
          "args": common + skill_args("proactive-review") + ["--monitor-script", "px_proactive.py"] + routine()},
         {"name": "px-digest", "schedule": "0 9 * * *",
          "prompt": "Daily agency digest: follow agency-digest.",
          "args": common + skill_args("agency-digest") + routine()},
         # Search by meaning: embed new memories / chats / documents (model-free; idle without a Voyage key).
-        {"name": "px-index", "schedule": "*/10 * * * *", "prompt": "",
+        {"name": "px-index", "schedule": "*/20 * * * *", "prompt": "",
          "args": ["--deliver", deliver, "--no-agent", "--script", "px_index.py"]},
         # Audience Seeding: newest GitHub snapshot (only downloads when the repo moved); once a day the
         # summary + reports go to HQ and each client's Engage list to their channel. Model-free.
@@ -785,7 +785,7 @@ def hq_jobs(deliver, learn_model):
         {"name": "px-heal", "schedule": "every 2m", "prompt": "",
          "args": ["--deliver", deliver, "--no-agent", "--script", "px_heal.py"]},
         # Job watchdog: a failed scheduled job is re-run once; if it fails again the owners get one DM.
-        {"name": "px-watch", "schedule": "every 10m", "prompt": "",
+        {"name": "px-watch", "schedule": "every 10m",   # reads local run history; DB only on a failure "prompt": "",
          "args": ["--deliver", deliver, "--failure-deliver", "local", "--no-agent", "--script", "px_watch.py"]},
         # Connected memory: the day's new facts -> Graphiti knowledge graph (after the memory digest).
         {"name": "px-graph", "schedule": "45 23 * * *", "prompt": "",

@@ -41,6 +41,26 @@ def main(argv):
     cmd = argv[0]
     if cmd == "apply-changes":
         return apply_changes(argv[1] if len(argv) > 1 else "", argv[2] if len(argv) > 2 else "your change")
+    # Frequent jobs open the database only when they have something to do: every connection wakes the
+    # (free, metered) database for at least 5 minutes, and the jobs below run every 2-10 minutes.
+    if cmd == "heal-chats":
+        # Every 2 min: chats frozen by a restart mid-answer are un-stuck and the person is told.
+        from . import heal
+        for line in heal.heal():
+            print(line, file=sys.stderr)
+        return 0
+    if cmd == "cron-watch":
+        # Failed scheduled jobs are retried once; a second failure is DMed to owners.
+        from . import cronwatch
+        for line in cronwatch.watch():
+            print(line, file=sys.stderr)
+        return 0
+    if cmd == "standup-tick":
+        from . import standup
+        if not standup.needs_db():
+            return 0
+    if cmd == "semantic-index" and not os.environ.get("VOYAGE_API_KEY"):
+        return 0
     conn = ledger.connect()
     try:
         if cmd == "snapshot-metrics":
@@ -126,16 +146,6 @@ def main(argv):
                     print(f"posted {line}", file=sys.stderr)
             except audience.AudienceError as e:
                 print(f"skipped {cmd}: {e}", file=sys.stderr)
-        elif cmd == "cron-watch":
-            # Every 10 min: failed scheduled jobs are retried once; a second failure is DMed to owners.
-            from . import cronwatch
-            for line in cronwatch.watch(conn):
-                print(line, file=sys.stderr)
-        elif cmd == "heal-chats":
-            # Every 2 min: chats frozen by a restart mid-answer are un-stuck and the person is told.
-            from . import heal
-            for line in heal.heal():
-                print(line, file=sys.stderr)
         elif cmd == "brain-bootstrap":
             # One-time "childhood": score the whole conversation history so sleep can learn from it.
             from . import brain
@@ -146,6 +156,7 @@ def main(argv):
         elif cmd == "standup-tick":
             from . import standup
             standup.tick(conn)                         # DMs + one channel summary; stdout stays empty
+            standup.save_gate(conn)                    # when the next tick needs the database
         elif cmd == "tasks-remind":
             from . import tasks
             tasks.send_reminders(conn)                 # DMs only; stdout stays empty

@@ -82,6 +82,9 @@ def _short(error):
 
 
 def watch(conn=None, root=None, run=None, dm=None):
+    found = failures(root)
+    if not found:
+        return []                                # nothing failed: don't wake the database
     own = conn is None
     conn = conn or ledger.connect()
     run = run or subprocess.run
@@ -90,7 +93,7 @@ def watch(conn=None, root=None, run=None, dm=None):
     try:
         conn.execute(SCHEMA)
         conn.commit()
-        for f in failures(root):
+        for f in found:
             if conn.execute("SELECT 1 FROM cron_watch WHERE run_id = %s", (f["run_id"],)).fetchone():
                 continue
             retried = conn.execute("""SELECT 1 FROM cron_watch WHERE job_id = %s AND action = 'retried'
